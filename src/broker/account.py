@@ -164,9 +164,12 @@ class Account:
         return trade
 
     def update_stop(self, new_stop: float) -> None:
-        """直接覆寫止損價（ratchet 規則由 engine 判斷後才呼叫）。
+        """直接覆寫止損價。
 
-        仍會驗證新止損與 position 方向相容。
+        ratchet 規則（多單只能上移、空單只能下移）由 engine 判斷後才呼叫此方法。
+        本方法只檢查 ``new_stop > 0``，不檢查與 entry_price 相對位置——
+        因為拖曳止損可能移入利潤區（multi-bar 持有時 stop 可超越 entry），
+        該情境合法。
         """
         if self._position is None:
             raise AccountInvariantError(
@@ -174,17 +177,7 @@ class Account:
             )
         if new_stop <= 0:
             raise AccountInvariantError(f"new_stop must be > 0, got {new_stop}")
-
-        pos = self._position
-        if pos.direction is Direction.LONG and new_stop >= pos.entry_price:
-            raise AccountInvariantError(
-                f"long stop ({new_stop}) must be < entry_price ({pos.entry_price})"
-            )
-        if pos.direction is Direction.SHORT and new_stop <= pos.entry_price:
-            raise AccountInvariantError(
-                f"short stop ({new_stop}) must be > entry_price ({pos.entry_price})"
-            )
-        pos.stop_price = float(new_stop)
+        self._position.stop_price = float(new_stop)
 
     def snapshot_equity(self, mark_price: float, timestamp: pd.Timestamp) -> None:
         """記錄當下 equity 至歷史，供日後績效計算使用。"""

@@ -182,14 +182,23 @@ class TestAccount:
         with pytest.raises(AccountInvariantError, match="no position"):
             a.close_position(100.0, TS2, fee=0.1, reason="MANUAL")
 
-    def test_update_stop_long_only_valid(self) -> None:
+    def test_update_stop_accepts_above_entry_for_long(self) -> None:
+        """拖曳止損可超越 entry 進入利潤區（價格大漲後 ratchet 結果）。"""
         a = Account(500.0)
         a.open_position(Direction.LONG, 1.0, 100.0, TS1, 95.0, fee=0.1)
         a.update_stop(97.0)
         assert a.position.stop_price == 97.0
-        # 不允許 stop >= entry
-        with pytest.raises(AccountInvariantError, match="long stop"):
-            a.update_stop(101.0)
+        # 多單在價格上漲後合法地把 stop 移到 entry 之上
+        a.update_stop(105.0)
+        assert a.position.stop_price == 105.0
+
+    def test_update_stop_rejects_non_positive(self) -> None:
+        a = Account(500.0)
+        a.open_position(Direction.LONG, 1.0, 100.0, TS1, 95.0, fee=0.1)
+        with pytest.raises(AccountInvariantError, match=">"):
+            a.update_stop(0.0)
+        with pytest.raises(AccountInvariantError, match=">"):
+            a.update_stop(-5.0)
 
     def test_update_stop_no_position_raises(self) -> None:
         a = Account(500.0)
@@ -263,6 +272,43 @@ class TestBrokerLimitFill:
         res = self.broker.try_fill_limit(order, bar, self.account)
         assert not res.filled
         assert "above bar.high" in res.reason
+
+    def test_long_limit_above_bar_high_caps_at_high(self) -> None:
+        """Marketable limit（限價 > bar.high）以 bar.high 成交，不應 raise。"""
+        bar = _bar(TS1, o=1000.0, h=1000.5, l=999.5, c=1000.2)
+        order = LimitOrder(Direction.LONG, limit_price=1001.0, quantity=1.0, initial_stop=995.0)
+        res = self.broker.try_fill_limit(order, bar, self.account)
+        assert res.filled
+        assert res.fill_price == 1000.5  # capped at bar.high
+
+    def test_short_limit_below_bar_low_caps_at_low(self) -> None:
+        bar = _bar(TS1, o=1000.0, h=1000.5, l=999.5, c=1000.2)
+        order = LimitOrder(Direction.SHORT, limit_price=999.0, quantity=1.0, initial_stop=1005.0)
+        res = self.broker.try_fill_limit(order, bar, self.account)
+        assert res.filled
+        assert res.fill_price == 999.5  # capped at bar.low
+
+    def test_long_stop_above_fill_after_cap_aborts(self) -> None:
+        """訊號 bar 算的 stop 跨 bar 後高過實際 fill_price → 放棄進場（不 raise）。"""
+        # bar.high = 1000.05；limit = 1001.0 被 cap 到 1000.05；
+        # 但 initial_stop = 1000.10 > fill 1000.05 → 不安全
+        bar = _bar(TS1, o=1000.0, h=1000.05, l=999.5, c=1000.0)
+        order = LimitOrder(
+            Direction.LONG, limit_price=1001.0, quantity=1.0, initial_stop=1000.10,
+        )
+        res = self.broker.try_fill_limit(order, bar, self.account)
+        assert not res.filled
+        assert "not below fill" in res.reason
+        assert not self.account.has_position()
+
+    def test_short_stop_below_fill_after_cap_aborts(self) -> None:
+        bar = _bar(TS1, o=1000.0, h=1000.5, l=999.95, c=1000.0)
+        order = LimitOrder(
+            Direction.SHORT, limit_price=999.0, quantity=1.0, initial_stop=999.90,
+        )
+        res = self.broker.try_fill_limit(order, bar, self.account)
+        assert not res.filled
+        assert "not above fill" in res.reason
 
     def test_fill_with_existing_position_raises(self) -> None:
         # 已有持倉再嘗試成交 → raise

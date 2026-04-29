@@ -58,13 +58,17 @@ class BrokerSimulator:
 
         if order.direction is Direction.LONG:
             if bar.low > order.limit_price:
+                # 限價低於 bar.low：價格從未下探到限價 → 不成交
                 return FillResult(
                     filled=False,
                     reason=(
                         f"long limit {order.limit_price:.6f} below bar.low {bar.low:.6f}"
                     ),
                 )
-            fill_price = order.limit_price
+            # 限價 >= bar.low 即視為成交。fill_price 取 min(limit, bar.high)：
+            # 限價若高於 bar.high，代表 bar 內最高也只到 bar.high，我們不可能付得比 bar.high 多。
+            # 實盤對應「marketable buy limit 在開盤瞬間以最佳 ask 跨價成交」的情境。
+            fill_price = min(order.limit_price, bar.high)
         else:  # SHORT
             if bar.high < order.limit_price:
                 return FillResult(
@@ -73,12 +77,31 @@ class BrokerSimulator:
                         f"short limit {order.limit_price:.6f} above bar.high {bar.high:.6f}"
                     ),
                 )
-            fill_price = order.limit_price
+            fill_price = max(order.limit_price, bar.low)
 
         # 不變式：成交價必須在 K 線範圍內
         if not (bar.low <= fill_price <= bar.high):
             raise OrderExecutionError(
                 f"fill_price {fill_price} outside bar range [{bar.low}, {bar.high}]"
+            )
+
+        # 跨 bar 後 stop 可能變得不安全（訊號 bar 算的 stop 已不再低於 fill）
+        # 此情境放棄進場：market 已對我們不利，硬進會違反 Account 不變式
+        if order.direction is Direction.LONG and order.initial_stop >= fill_price:
+            return FillResult(
+                filled=False,
+                reason=(
+                    f"long stop {order.initial_stop:.6f} not below fill {fill_price:.6f} "
+                    "after price cap; aborting unsafe entry"
+                ),
+            )
+        if order.direction is Direction.SHORT and order.initial_stop <= fill_price:
+            return FillResult(
+                filled=False,
+                reason=(
+                    f"short stop {order.initial_stop:.6f} not above fill {fill_price:.6f} "
+                    "after price cap; aborting unsafe entry"
+                ),
             )
 
         notional = order.quantity * fill_price
