@@ -6,12 +6,12 @@ data:
   # 唯讀來源（PPO_TradingModel 已下載的 1m parquet）
   source_parquet: /Users/jim_hsieh/Documents/GitHub/PPO_TradingModel/data/processed/ETHUSDT_1m.parquet
   symbol: ETHUSDT
-  timeframe: 5m   # 1m / 3m / 5m / 15m / 30m / 1H / 4H
+  timeframe: 15m   # 1m / 3m / 5m / 15m / 30m / 1H / 4H
 
 period:
   in_sample:
     start: 2023-01-01
-    end:   2024-12-31
+    end:   2023-02-01
   out_of_sample:
     start: 2025-01-01
     end:   null   # null = 用到資料最後一根
