@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Backtest outputs (per CLAUDE.md §9)
+results/
+
+# Data caches (raw parquet stays in PPO_TradingModel, never copied here)
+data/cache/
+*.parquet.cache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code local settings (user-specific permissions)
+.claude/settings.local.json
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
