@@ -1,28 +1,26 @@
 """Event-driven backtest 主迴圈。
 
-把 strategy + broker + account 串起來。設計嚴格按照 ARCHITECTURE.md §3.5 + §7：
+把 strategy + broker + account + trailing controller 串起來。對應
+ARCHITECTURE.md §3.5 + §7 + §11。
 
 對每根 K 線 i 的處理順序：
 
     1. 撮合 pending limit 單（在 bar[i].open 撮合）
-       - limit_price 在此時才計算（= bar.open ± slippage_pct）
-       - quantity = (account.equity * position_size_pct) / limit_price
-       - 成功 → 開倉；失敗 → 訊號作廢
+       - limit_price = bar.open ± slippage_pct
+       - quantity = (account.equity × position_size_pct) / limit_price
+       - 成功 → 開倉 + 立即 instantiate TrailingStopController
+       - 失敗 → 訊號作廢
 
     2. 盤中止損檢查（broker.check_stop 用 bar.high/low）
-       - 帶倉跨 bar：若 bar.open 已穿越 stop → 跳空平倉於 bar.open
+       - 帶倉跨 bar 且 bar.open 已穿越 stop → 跳空於 bar.open
        - 同根進場：不適用跳空規則
+       - 觸發 → 平倉 + 廢棄 controller
 
     3. 收盤後策略動作：
-       3a. 持倉中 → ratchet 拖曳止損
-           （多單只能上移、空單只能下移）
-       3b. 無倉位且無 pending → detect_entry 是否該進場
+       3a. 若有持倉 → controller.update(...) 取得新 stop（三階段狀態機 + ratchet）
+       3b. 若無持倉且無 pending → strategy.detect_entry → pending_signal
 
     4. 紀錄 equity（mark = bar.close）
-
-設計原則（CLAUDE.md §10 預留接口）：
-- engine 不知道是「多策略」還是「空策略」，只接受 BaseTrendStrategy
-- 將來實盤 broker 滿足相同 protocol 即可替換
 """
 
 from __future__ import annotations
@@ -38,6 +36,7 @@ from src.broker.account import Account
 from src.broker.simulator import BrokerSimulator
 from src.broker.types import Bar, LimitOrder
 from src.strategy.base import BaseTrendStrategy, assert_indicators_ready
+from src.strategy.trailing import TrailingStopController
 from src.utils.exceptions import OrderExecutionError
 from src.utils.types import Direction
 from src.utils.validation import validate_ohlc
@@ -63,9 +62,6 @@ def run_backtest(
         broker: 撮合器（持有 fee / slippage 設定）。
         config: 引擎設定。預設 ``EngineConfig()`` 即倉位 60%。
         show_progress: 是否顯示 tqdm 進度條。
-
-    Returns:
-        BacktestResult，包含交易、equity 曲線、訊號統計。
     """
     config = config or EngineConfig()
     validate_ohlc(df, require_volume=True)
@@ -76,6 +72,8 @@ def run_backtest(
         raise ValueError("empty dataframe")
 
     pending_signal = None
+    trailing: TrailingStopController | None = None
+
     signals_emitted = 0
     signals_filled = 0
     signals_unfilled = 0
@@ -86,6 +84,7 @@ def run_backtest(
         iterator = tqdm(iterator, total=n, desc=f"[{account.name}] backtest")
 
     slippage = broker.config.slippage_pct
+    trailing_params = strategy.params.trailing
 
     for i in iterator:
         ts = df.index[i]
@@ -101,7 +100,6 @@ def run_backtest(
             if equity_now > 0 and limit_price > 0:
                 quantity = (equity_now * config.position_size_pct) / limit_price
 
-                # 防呆：跨 bar 後 stop 與 limit 相對位置可能變化，導致違反 stop_direction
                 stop_ok = _stop_on_correct_side(
                     pending_signal.direction, pending_signal.initial_stop, limit_price
                 )
@@ -121,12 +119,18 @@ def run_backtest(
                         raise
                     if result.filled:
                         signals_filled += 1
+                        # 立刻 instantiate 拖曳止損 controller
+                        trailing = TrailingStopController(
+                            position=account.position,
+                            params=trailing_params,
+                            broker_config=broker.config,
+                        )
                         logger.debug(
-                            "FILLED %s @ %.4f qty=%.6f stop=%.4f",
+                            "FILLED %s @ %.4f qty=%.6f stop=%.4f R=%.6f abnormal_R=%s",
                             pending_signal.direction,
-                            result.fill_price,
-                            quantity,
+                            result.fill_price, quantity,
                             pending_signal.initial_stop,
+                            trailing.R, trailing.is_abnormal_r,
                         )
                     else:
                         signals_unfilled += 1
@@ -151,19 +155,21 @@ def run_backtest(
                     "STOP %s @ %.4f net_pnl=%.4f reason=%s",
                     trade.direction, trade.exit_price, trade.net_pnl, trade.exit_reason,
                 )
+                trailing = None  # 持倉結束 → 廢棄 controller
 
         # === Step 3a: 收盤 ratchet 拖曳止損 ===
-        if account.has_position():
-            candidate = strategy.compute_trailing_stop_candidate(df, i)
-            if not math.isnan(candidate):
-                pos = account.position
-                assert pos is not None
-                if pos.direction is Direction.LONG and candidate > pos.stop_price:
-                    account.update_stop(candidate)
-                    logger.debug("RATCHET LONG stop %.4f -> %.4f", pos.stop_price, candidate)
-                elif pos.direction is Direction.SHORT and candidate < pos.stop_price:
-                    account.update_stop(candidate)
-                    logger.debug("RATCHET SHORT stop %.4f -> %.4f", pos.stop_price, candidate)
+        if account.has_position() and trailing is not None:
+            new_stop = trailing.update(
+                bar=bar, df=df, bar_index=i,
+                current_stop=account.position.stop_price,
+            )
+            if new_stop is not None:
+                old_stop = account.position.stop_price
+                account.update_stop(new_stop)
+                logger.debug(
+                    "RATCHET %s stop %.4f -> %.4f (stage=%d)",
+                    account.position.direction, old_stop, new_stop, trailing.stage,
+                )
 
         # === Step 3b: 收盤偵測進場訊號 ===
         if not account.has_position():
@@ -179,14 +185,12 @@ def run_backtest(
         # === Step 4: 紀錄 equity ===
         account.snapshot_equity(bar.close, ts)
 
-    # 收尾：最後一根後若仍有 pending_signal → 算未成交
+    # 收尾
     if pending_signal is not None:
         signals_unfilled += 1
 
-    # 收尾：若仍有持倉，依 config 決定是否強平
     if account.has_position() and config.force_close_at_end:
         last_bar = Bar.from_row(df.index[-1], df.iloc[-1])
-        # 用 close 強平，手續費用 taker
         pos = account.position
         assert pos is not None
         notional = pos.quantity * last_bar.close
@@ -197,6 +201,7 @@ def run_backtest(
             fee=fee,
             reason="FORCE_CLOSE_END",
         )
+        trailing = None
 
     final_equity = account.equity(float(df.iloc[-1]["close"]))
     equity_curve = pd.Series(
@@ -223,7 +228,7 @@ def run_backtest(
             "skip_signal_when_pending": config.skip_signal_when_pending,
             "taker_fee_rate": broker.config.taker_fee_rate,
             "slippage_pct": broker.config.slippage_pct,
-            "strategy_params": vars(strategy.params),
+            "strategy_params": _serialize_params(strategy.params),
         },
     )
 
@@ -235,7 +240,7 @@ def run_backtest(
 def _compute_limit_price(
     bar_open: float, direction: Direction, slippage_pct: float
 ) -> float:
-    """計算限價：多單 = open*(1+slip)，空單 = open*(1-slip)。"""
+    """計算限價：多單 = open × (1+slip)、空單 = open × (1−slip)。"""
     if direction is Direction.LONG:
         return bar_open * (1.0 + slippage_pct)
     return bar_open * (1.0 - slippage_pct)
@@ -248,3 +253,9 @@ def _stop_on_correct_side(
     if direction is Direction.LONG:
         return stop_price < limit_price
     return stop_price > limit_price
+
+
+def _serialize_params(params) -> dict:
+    """把 StrategyParams（含 nested TrailingStopParams）攤平成 dict。"""
+    from dataclasses import asdict
+    return asdict(params)

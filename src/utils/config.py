@@ -1,6 +1,6 @@
 """YAML 設定載入與驗證。
 
-對應 configs/default.yaml schema。預設不寫死路徑——caller 傳入 path 字串。
+對應 configs/default.yaml schema（含 §11 三階段止損 trailing 子區塊）。
 所有不合法欄位皆 raise ``ConfigError``，CLAUDE.md §5 fail-fast。
 """
 
@@ -36,6 +36,23 @@ class PeriodSpec:
 
 
 @dataclass(frozen=True)
+class TrailingConfig:
+    """三階段止損設定（對應 strategy.trailing 區塊）。"""
+
+    swing_lookback: int = 4
+    stage1_slippage_buffer: float = 0.0003
+
+    stage2_normal_trigger_r: float = 1.2
+    stage2_abnormal_trigger_r: float = 2.4
+    stage2_buffer_r: float = 0.2
+
+    stage3_normal_trigger_r: float = 2.4
+    stage3_abnormal_trigger_r: float = 4.8
+    bollinger_period: int = 20
+    bollinger_num_std: float = 2.0
+
+
+@dataclass(frozen=True)
 class FullConfig:
     """完整設定的扁平容器。"""
 
@@ -57,12 +74,12 @@ class FullConfig:
     maker_fee_rate: float
     slippage_pct: float
 
-    # strategy
+    # strategy: entry
     wma_fast: int
     wma_slow: int
-    atr_period: int
-    atr_multiplier: float
-    atr_lookback: int
+
+    # strategy: trailing stop
+    trailing: TrailingConfig
 
     # backtest
     output_dir: Path
@@ -120,12 +137,23 @@ def load_config(path: str | Path) -> FullConfig:
     maker = float(fees["maker_fee_rate"])
     slip = float(fees["slippage_pct"])
 
-    # ---- strategy ----
+    # ---- strategy: entry ----
     wma_fast = int(strategy["wma_fast"])
     wma_slow = int(strategy["wma_slow"])
-    atr_period = int(strategy["atr_period"])
-    atr_multiplier = float(strategy["atr_multiplier"])
-    atr_lookback = int(strategy["atr_lookback"])
+
+    # ---- strategy: trailing ----
+    trailing_raw = strategy.get("trailing", {})
+    trailing = TrailingConfig(
+        swing_lookback=int(trailing_raw.get("swing_lookback", 4)),
+        stage1_slippage_buffer=float(trailing_raw.get("stage1_slippage_buffer", 0.0003)),
+        stage2_normal_trigger_r=float(trailing_raw.get("stage2_normal_trigger_r", 1.2)),
+        stage2_abnormal_trigger_r=float(trailing_raw.get("stage2_abnormal_trigger_r", 2.4)),
+        stage2_buffer_r=float(trailing_raw.get("stage2_buffer_r", 0.2)),
+        stage3_normal_trigger_r=float(trailing_raw.get("stage3_normal_trigger_r", 2.4)),
+        stage3_abnormal_trigger_r=float(trailing_raw.get("stage3_abnormal_trigger_r", 4.8)),
+        bollinger_period=int(trailing_raw.get("bollinger_period", 20)),
+        bollinger_num_std=float(trailing_raw.get("bollinger_num_std", 2.0)),
+    )
 
     # ---- backtest ----
     output_dir = Path(backtest.get("output_dir", "results")).expanduser()
@@ -150,9 +178,7 @@ def load_config(path: str | Path) -> FullConfig:
         slippage_pct=slip,
         wma_fast=wma_fast,
         wma_slow=wma_slow,
-        atr_period=atr_period,
-        atr_multiplier=atr_multiplier,
-        atr_lookback=atr_lookback,
+        trailing=trailing,
         output_dir=output_dir,
         show_progress=show_progress,
         force_close_at_end=force_close_at_end,

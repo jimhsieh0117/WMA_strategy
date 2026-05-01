@@ -2,12 +2,13 @@
 
 設計原則：
 - ``StrategyParams``：不可變設定（``frozen=True``），便於 cache、安全傳遞
+- ``TrailingStopParams``：三階段止損的子設定（嵌在 StrategyParams 內）
 - ``EntrySignal``：策略的純輸出，不含 broker / account 概念
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -15,23 +16,92 @@ from src.utils.exceptions import ConfigError
 from src.utils.types import Direction
 
 
-@dataclass(frozen=True)
-class StrategyParams:
-    """策略可調參數，對應 configs/default.yaml 的 ``strategy`` 區塊。
+# --------------------------------------------------------------------------- #
+# 三階段拖曳止損設定
+# --------------------------------------------------------------------------- #
 
-    建立時呼叫 ``validate()`` 確保值合法。
+@dataclass(frozen=True)
+class TrailingStopParams:
+    """三階段止損的所有參數。對應 ARCHITECTURE.md §11。
+
+    Stage 1（剛進場、初始保護）：
+        多單 stop = min(low over [t-N+1..t]) × (1 − slippage_buffer)
+        空單鏡像
+
+    Stage 2（鎖利保本）：
+        觸發：normal R 時 1.2R / abnormal R 時 2.4R
+        新 stop = entry × (1 ± (taker×2 + slippage)) ± buffer_r × R
+
+    Stage 3（趨勢跟蹤）：
+        觸發：normal 2.4R / abnormal 4.8R
+        多單 stop 跟 Bollinger lower band（WMA, 20, 2σ）
+        空單跟 upper band
+        在 Stage 3 中，仍與 Stage 2 fixed 取較有利者作為 floor
     """
 
-    wma_fast: int = 2
-    wma_slow: int = 4
-    atr_period: int = 14
-    atr_multiplier: float = 2.0
-    atr_lookback: int = 14
+    # ---- Stage 1 ----
+    swing_lookback: int = 4              # 進場 K 線「前 N 根」的 N
+    stage1_slippage_buffer: float = 0.0003  # 0.03% buffer，遠離極值方向
+
+    # ---- Stage 2 ----
+    stage2_normal_trigger_r: float = 1.2
+    stage2_abnormal_trigger_r: float = 2.4
+    stage2_buffer_r: float = 0.2         # 保本 stop 額外加 0.2R buffer
+
+    # ---- Stage 3 ----
+    stage3_normal_trigger_r: float = 2.4
+    stage3_abnormal_trigger_r: float = 4.8
+    bollinger_period: int = 20
+    bollinger_num_std: float = 2.0
 
     def __post_init__(self) -> None:
-        self._validate()
+        for name, val, low_ok in [
+            ("swing_lookback", self.swing_lookback, 1),
+            ("bollinger_period", self.bollinger_period, 2),
+        ]:
+            if not isinstance(val, int) or isinstance(val, bool) or val < low_ok:
+                raise ConfigError(f"{name} must be int >= {low_ok}, got {val}")
 
-    def _validate(self) -> None:
+        for name, val in [
+            ("stage1_slippage_buffer", self.stage1_slippage_buffer),
+            ("stage2_normal_trigger_r", self.stage2_normal_trigger_r),
+            ("stage2_abnormal_trigger_r", self.stage2_abnormal_trigger_r),
+            ("stage2_buffer_r", self.stage2_buffer_r),
+            ("stage3_normal_trigger_r", self.stage3_normal_trigger_r),
+            ("stage3_abnormal_trigger_r", self.stage3_abnormal_trigger_r),
+            ("bollinger_num_std", self.bollinger_num_std),
+        ]:
+            if val < 0:
+                raise ConfigError(f"{name} must be >= 0, got {val}")
+
+        if self.stage3_normal_trigger_r < self.stage2_normal_trigger_r:
+            raise ConfigError(
+                f"stage3_normal_trigger_r ({self.stage3_normal_trigger_r}) "
+                f"must be >= stage2_normal_trigger_r ({self.stage2_normal_trigger_r})"
+            )
+        if self.stage3_abnormal_trigger_r < self.stage2_abnormal_trigger_r:
+            raise ConfigError(
+                f"stage3_abnormal_trigger_r ({self.stage3_abnormal_trigger_r}) "
+                f"must be >= stage2_abnormal_trigger_r ({self.stage2_abnormal_trigger_r})"
+            )
+
+
+# --------------------------------------------------------------------------- #
+# 策略總設定
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class StrategyParams:
+    """策略可調參數，對應 configs/default.yaml 的 ``strategy`` 區塊。"""
+
+    # ---- 進場條件 ----
+    wma_fast: int = 2
+    wma_slow: int = 4
+
+    # ---- 拖曳止損子設定 ----
+    trailing: TrailingStopParams = field(default_factory=TrailingStopParams)
+
+    def __post_init__(self) -> None:
         if self.wma_fast < 1 or self.wma_slow < 1:
             raise ConfigError(
                 f"WMA periods must be >= 1, got fast={self.wma_fast}, slow={self.wma_slow}"
@@ -40,22 +110,26 @@ class StrategyParams:
             raise ConfigError(
                 f"wma_fast ({self.wma_fast}) must be < wma_slow ({self.wma_slow})"
             )
-        if self.atr_period < 1:
-            raise ConfigError(f"atr_period must be >= 1, got {self.atr_period}")
-        if self.atr_lookback < 1:
-            raise ConfigError(f"atr_lookback must be >= 1, got {self.atr_lookback}")
-        if self.atr_multiplier <= 0:
-            raise ConfigError(
-                f"atr_multiplier must be > 0, got {self.atr_multiplier}"
-            )
 
     @property
     def warmup_bars(self) -> int:
-        """暖機所需最少根數，超過此值後策略才會產生有效訊號。"""
-        # WMA 暖機 wma_slow - 1，ATR 暖機 atr_period - 1，
-        # 進場條件還需要回看 bar[t-3] → 整體取最大 + 3
-        return max(self.wma_slow, self.atr_period, self.atr_lookback) + 3
+        """暖機所需最少根數，超過此值後策略才會產生有效訊號。
 
+        包含：WMA(slow) 暖機、Bollinger 暖機、swing lookback、進場條件回看 3 根。
+        """
+        return (
+            max(
+                self.wma_slow,
+                self.trailing.bollinger_period,
+                self.trailing.swing_lookback,
+            )
+            + 3
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 訊號
+# --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class EntrySignal:
@@ -63,10 +137,10 @@ class EntrySignal:
 
     Attributes:
         direction: 多 / 空。
-        bar_index: 訊號產生的 K 線 index（df.iloc[bar_index] 即訊號 bar）。
-        timestamp: 訊號 bar 的時間戳，即 ``df.index[bar_index]``。
-        initial_stop: 進場時的初始止損價（用 bar[bar_index] 收盤後的資訊算出）。
-        reason: debug / log 訊息。
+        bar_index: 訊號產生的 K 線 index。
+        timestamp: ``df.index[bar_index]``。
+        initial_stop: 進場時的初始止損價，由策略以「前 N 根 swing low/high」算出。
+        reason: debug / log。
     """
 
     direction: Direction

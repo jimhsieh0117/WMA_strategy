@@ -1,6 +1,4 @@
-# WMA Strategy 預設設定（對應 ARCHITECTURE.md §4）
-#
-# 命令列可透過 --override key=value 覆寫個別欄位（之後實作）
+# WMA Strategy 預設設定（對應 ARCHITECTURE.md §4 + §11 三階段止損）
 
 data:
   # 唯讀來源（PPO_TradingModel 已下載的 1m parquet）
@@ -26,11 +24,26 @@ fees:
   slippage_pct:   0.0003    # 0.03%
 
 strategy:
-  wma_fast:        2
-  wma_slow:        4
-  atr_period:      14
-  atr_multiplier:  2.0
-  atr_lookback:    14
+  # 進場條件
+  wma_fast: 2
+  wma_slow: 4
+
+  # 三階段止損（ARCHITECTURE.md §11）
+  trailing:
+    # Stage 1：剛進場、初始 swing-based 保護
+    swing_lookback:           4         # 用「前 N 根」原始 K 線的反向極值
+    stage1_slippage_buffer:   0.0003    # 0.03% 推離極值
+
+    # Stage 2：保本鎖利
+    stage2_normal_trigger_r:    1.2     # 正常 R：1.2R 觸發保本
+    stage2_abnormal_trigger_r:  2.4     # 異常 R（R<手續費+滑點）：2.4R 觸發
+    stage2_buffer_r:            0.2     # 保本 stop 額外 +0.2R buffer
+
+    # Stage 3：Bollinger 跟蹤
+    stage3_normal_trigger_r:    2.4     # 正常 R：2.4R 切到 BB 跟蹤
+    stage3_abnormal_trigger_r:  4.8     # 異常 R：4.8R 切到 BB 跟蹤
+    bollinger_period:           20      # WMA 中軌週期
+    bollinger_num_std:          2.0     # 上下軌 ±2σ
 
 backtest:
   output_dir: results

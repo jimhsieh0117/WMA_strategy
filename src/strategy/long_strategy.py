@@ -1,6 +1,6 @@
-"""多頭趨勢策略 — 對應 多頭趨勢策略_v2.md 規格。
+"""多頭趨勢策略 — 對應 多頭趨勢策略_v2.md + ARCHITECTURE.md §11 三階段止損。
 
-進場條件（Bar[0] 收盤後判斷，bar_index 對應 Bar[0]）：
+進場條件（Bar[t] 收盤後判斷）：
 
   條件 1（黃金交叉）：
     HA_WMA_fast[t]   >  HA_WMA_slow[t]
@@ -10,9 +10,15 @@
     HA_Close[t-2] < HA_Close[t]
     HA_Close[t-3] < HA_Close[t]
 
-兩條件同時成立 → 產生 ENTRY 訊號，初始止損 = highest(N) - ATR × multiplier。
+兩條件同時成立 → 產生 ENTRY 訊號。
 
-Look-ahead 防護：只讀 ``df.iloc[: bar_index + 1]``，禁止使用 ``bar_index + 1`` 之後的資料。
+初始止損（Stage 1，由本檔負責）：
+    initial_stop = min(low over [t - swing_lookback + 1 .. t]) × (1 − slippage_buffer)
+    // 用前 N 根原始 K 線的最低點，再往下 buffer 一個滑點
+
+Stage 2 / Stage 3 止損由 ``TrailingStopController`` 處理，本檔不涉。
+
+Look-ahead 防護：只讀 ``df.iloc[: bar_index + 1]``。
 """
 
 from __future__ import annotations
@@ -33,13 +39,11 @@ class LongTrendStrategy(BaseTrendStrategy):
         self, df: pd.DataFrame, bar_index: int
     ) -> EntrySignal | None:
         assert_indicators_ready(df)
-        # 進場需要 bar[t-3..t] 共 4 根，外加暖機期
         if bar_index < self.params.warmup_bars:
             return None
         if bar_index < 3:
             return None
 
-        # 切片：只看 [t-3 .. t]，杜絕 look-ahead
         wma_fast = df["ha_wma_fast"]
         wma_slow = df["ha_wma_slow"]
         ha_close = df["ha_close"]
@@ -52,51 +56,42 @@ class LongTrendStrategy(BaseTrendStrategy):
         hc_t2 = ha_close.iat[bar_index - 2]
         hc_t3 = ha_close.iat[bar_index - 3]
 
-        # 暖機 NaN 保護：任何指標尚未就緒 → 不出訊號
+        # 暖機 NaN 防護
         for v in (wma_f_t, wma_f_prev, wma_s_t, wma_s_prev, hc_t, hc_t2, hc_t3):
             if math.isnan(v):
                 return None
 
         # 條件 1：當根金叉 + 前根尚未交叉
-        cond_cross = (wma_f_t > wma_s_t) and (wma_f_prev <= wma_s_prev)
-        if not cond_cross:
+        if not ((wma_f_t > wma_s_t) and (wma_f_prev <= wma_s_prev)):
             return None
 
         # 條件 2：交叉前 -2 / -3 根 HA_Close 低於當根
-        cond_structure = (hc_t2 < hc_t) and (hc_t3 < hc_t)
-        if not cond_structure:
+        if not ((hc_t2 < hc_t) and (hc_t3 < hc_t)):
             return None
 
-        # 計算初始止損
-        initial_stop = self.compute_trailing_stop_candidate(df, bar_index)
-        if math.isnan(initial_stop):
+        # Stage 1 初始止損：前 N 根原始 K 線最低低點，再往下 buffer
+        n = self.params.trailing.swing_lookback
+        if bar_index + 1 < n:
+            return None
+        swing_window = df["low"].iloc[bar_index - n + 1 : bar_index + 1]
+        swing_low = float(swing_window.min())
+        initial_stop = swing_low * (1.0 - self.params.trailing.stage1_slippage_buffer)
+
+        # 安全檢查：止損不能高於當下收盤（會立即被打掉）；
+        # 訊號 bar 收盤是 entry 的最佳近似（實際 entry 在 bar t+1 開盤）
+        ref_price = float(df["close"].iat[bar_index])
+        if initial_stop >= ref_price:
             return None
 
         return EntrySignal(
             direction=Direction.LONG,
             bar_index=bar_index,
             timestamp=df.index[bar_index],
-            initial_stop=float(initial_stop),
+            initial_stop=initial_stop,
             reason=(
                 f"golden_cross & structure: "
                 f"wma_f={wma_f_t:.4f} > wma_s={wma_s_t:.4f}, "
-                f"hc[-2]={hc_t2:.4f}, hc[-3]={hc_t3:.4f} < hc[0]={hc_t:.4f}"
+                f"hc[-2]={hc_t2:.4f}, hc[-3]={hc_t3:.4f} < hc[0]={hc_t:.4f}, "
+                f"swing_low={swing_low:.4f}"
             ),
         )
-
-    def compute_trailing_stop_candidate(
-        self, df: pd.DataFrame, bar_index: int
-    ) -> float:
-        assert_indicators_ready(df)
-        n = self.params.atr_lookback
-        if bar_index + 1 < n:
-            return math.nan
-
-        atr_val = df["atr"].iat[bar_index]
-        if math.isnan(atr_val):
-            return math.nan
-
-        # 用原始 K 線 high；只看 [t-N+1 .. t]，無 look-ahead
-        window = df["high"].iloc[bar_index - n + 1 : bar_index + 1]
-        highest = float(window.max())
-        return highest - atr_val * self.params.atr_multiplier

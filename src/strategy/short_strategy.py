@@ -1,6 +1,6 @@
-"""空頭趨勢策略 — 對應 空頭趨勢策略_v2.md 規格。
+"""空頭趨勢策略 — 對應 空頭趨勢策略_v2.md + ARCHITECTURE.md §11 三階段止損。
 
-進場條件（Bar[0] 收盤後判斷，bar_index 對應 Bar[0]）：
+進場條件（Bar[t] 收盤後判斷）：
 
   條件 1（死亡交叉）：
     HA_WMA_fast[t]   <  HA_WMA_slow[t]
@@ -10,7 +10,12 @@
     HA_Close[t-2] > HA_Close[t]
     HA_Close[t-3] > HA_Close[t]
 
-兩條件同時成立 → 產生 ENTRY 訊號，初始止損 = lowest(N) + ATR × multiplier。
+兩條件同時成立 → 產生 ENTRY 訊號。
+
+初始止損（Stage 1）：
+    initial_stop = max(high over [t - swing_lookback + 1 .. t]) × (1 + slippage_buffer)
+
+Stage 2 / Stage 3 止損由 ``TrailingStopController`` 處理。
 
 Look-ahead 防護：只讀 ``df.iloc[: bar_index + 1]``。
 """
@@ -54,45 +59,35 @@ class ShortTrendStrategy(BaseTrendStrategy):
             if math.isnan(v):
                 return None
 
-        # 條件 1：當根死叉 + 前根尚未交叉
-        cond_cross = (wma_f_t < wma_s_t) and (wma_f_prev >= wma_s_prev)
-        if not cond_cross:
+        # 條件 1：當根死叉
+        if not ((wma_f_t < wma_s_t) and (wma_f_prev >= wma_s_prev)):
             return None
 
         # 條件 2：交叉前 -2 / -3 根 HA_Close 高於當根
-        cond_structure = (hc_t2 > hc_t) and (hc_t3 > hc_t)
-        if not cond_structure:
+        if not ((hc_t2 > hc_t) and (hc_t3 > hc_t)):
             return None
 
-        initial_stop = self.compute_trailing_stop_candidate(df, bar_index)
-        if math.isnan(initial_stop):
+        # Stage 1 初始止損：前 N 根原始 K 線最高點，再往上 buffer
+        n = self.params.trailing.swing_lookback
+        if bar_index + 1 < n:
+            return None
+        swing_window = df["high"].iloc[bar_index - n + 1 : bar_index + 1]
+        swing_high = float(swing_window.max())
+        initial_stop = swing_high * (1.0 + self.params.trailing.stage1_slippage_buffer)
+
+        ref_price = float(df["close"].iat[bar_index])
+        if initial_stop <= ref_price:
             return None
 
         return EntrySignal(
             direction=Direction.SHORT,
             bar_index=bar_index,
             timestamp=df.index[bar_index],
-            initial_stop=float(initial_stop),
+            initial_stop=initial_stop,
             reason=(
                 f"death_cross & structure: "
                 f"wma_f={wma_f_t:.4f} < wma_s={wma_s_t:.4f}, "
-                f"hc[-2]={hc_t2:.4f}, hc[-3]={hc_t3:.4f} > hc[0]={hc_t:.4f}"
+                f"hc[-2]={hc_t2:.4f}, hc[-3]={hc_t3:.4f} > hc[0]={hc_t:.4f}, "
+                f"swing_high={swing_high:.4f}"
             ),
         )
-
-    def compute_trailing_stop_candidate(
-        self, df: pd.DataFrame, bar_index: int
-    ) -> float:
-        assert_indicators_ready(df)
-        n = self.params.atr_lookback
-        if bar_index + 1 < n:
-            return math.nan
-
-        atr_val = df["atr"].iat[bar_index]
-        if math.isnan(atr_val):
-            return math.nan
-
-        # 用原始 K 線 low
-        window = df["low"].iloc[bar_index - n + 1 : bar_index + 1]
-        lowest = float(window.min())
-        return lowest + atr_val * self.params.atr_multiplier

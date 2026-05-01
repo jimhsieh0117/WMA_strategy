@@ -32,7 +32,7 @@ from src.reporting.plotter import plot_drawdown, plot_equity_curves
 from src.strategy.base import BaseTrendStrategy, prepare_indicators
 from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
-from src.strategy.types import StrategyParams
+from src.strategy.types import StrategyParams, TrailingStopParams
 from src.utils.config import FullConfig, PeriodSpec
 
 logger = logging.getLogger(__name__)
@@ -86,12 +86,21 @@ def run_single_strategy(
     logger.info("    %s %s bars after resample", f"{len(df):,}", cfg.timeframe)
 
     logger.info("[3/4] preparing indicators ...")
+    trailing = TrailingStopParams(
+        swing_lookback=cfg.trailing.swing_lookback,
+        stage1_slippage_buffer=cfg.trailing.stage1_slippage_buffer,
+        stage2_normal_trigger_r=cfg.trailing.stage2_normal_trigger_r,
+        stage2_abnormal_trigger_r=cfg.trailing.stage2_abnormal_trigger_r,
+        stage2_buffer_r=cfg.trailing.stage2_buffer_r,
+        stage3_normal_trigger_r=cfg.trailing.stage3_normal_trigger_r,
+        stage3_abnormal_trigger_r=cfg.trailing.stage3_abnormal_trigger_r,
+        bollinger_period=cfg.trailing.bollinger_period,
+        bollinger_num_std=cfg.trailing.bollinger_num_std,
+    )
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
         wma_slow=cfg.wma_slow,
-        atr_period=cfg.atr_period,
-        atr_multiplier=cfg.atr_multiplier,
-        atr_lookback=cfg.atr_lookback,
+        trailing=trailing,
     )
     augmented = prepare_indicators(df, params)
 

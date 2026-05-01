@@ -285,11 +285,20 @@ fees:
   slippage_pct: 0.0003        # 0.03%（用於限價單偏移）
 
 strategy:
+  # 進場條件
   wma_fast: 2
   wma_slow: 4
-  atr_period: 14
-  atr_multiplier: 2.0
-  atr_lookback: 14            # 計算最高/最低價的回看根數
+  # 三階段拖曳止損（詳見 §10）
+  trailing:
+    swing_lookback:           4
+    stage1_slippage_buffer:   0.0003
+    stage2_normal_trigger_r:  1.2
+    stage2_abnormal_trigger_r: 2.4
+    stage2_buffer_r:          0.2
+    stage3_normal_trigger_r:  2.4
+    stage3_abnormal_trigger_r: 4.8
+    bollinger_period:         20
+    bollinger_num_std:        2.0
 
 backtest:
   warmup_bars: 50             # 暖機根數（讓指標收斂）
@@ -454,7 +463,83 @@ t=0  Bar[0] 收盤 → 跑策略 → 產出 ENTRY signal（含 limit_price = Bar
 
 ---
 
-## 十、後續驗證模組（占位，待核心完成後實作）
+## 十、三階段拖曳止損設計（M5+ 已實作）
+
+> 取代舊版單一 Chandelier Exit。對應 `src/strategy/trailing.py`。
+
+### 11.1 設計目標
+
+舊版止損（Chandelier `highest(N) − ATR×k`）在 5m / 15m 上太緊：
+1. 進場後價格小幅震盪即被掃出
+2. 鎖利門檻不存在 → 已獲利的部位常吐回到負值
+3. 沒有區分「初始保護」與「鎖利後跟蹤」
+
+新版分三階段，每階段適用不同價格區間：
+- Stage 1：剛進場、方向未明，用 swing low/high 給寬鬆 buffer 避免誤觸
+- Stage 2：價格朝對的方向走到 1.2R，鎖保本 + 成本，確保不會獲利後吐成負值
+- Stage 3：價格走更遠（2.4R+），用 Bollinger Band 跟蹤趨勢
+
+### 11.2 三階段定義
+
+| 階段 | 觸發 | Stop 計算 |
+|------|------|-----------|
+| **Stage 1** | 持倉開始 | 多：`min(low over [t-N+1..t]) × (1 − slip_buffer)`<br>空：`max(high) × (1 + slip_buffer)`<br>N = `swing_lookback`（預設 4）|
+| **Stage 2** | progress ≥ stage2_trigger_r（normal 1.2R / abnormal 2.4R）| 多：`entry × (1 + 2×taker + slippage) + buffer_r × R`<br>空：鏡像<br>buffer_r = 0.2 |
+| **Stage 3** | progress ≥ stage3_trigger_r（normal 2.4R / abnormal 4.8R）| 多 stop = `max(stage2_stop, BB_lower)`<br>空 stop = `min(stage2_stop, BB_upper)`<br>BB = `WMA(20) ± 2σ` on 原始 close |
+
+`progress = (bar.high − entry) / R`（多）/`(entry − bar.low) / R`（空）
+
+`R = |entry_price − initial_stop|`（即 Stage 1 的 stop 與 entry 的距離）
+
+### 11.3 異常 R 處理（R < taker×2 + slippage）
+
+若風險距離小到光交易成本就吃掉，直接用 1.2R 拉保本會導致：
+- 1.2R 的價格漲幅 < 成本距離 → 保本 stop 高於當前 mark → 立即被掃
+
+解法：將兩個 trigger 全部 ×2（1.2 → 2.4，2.4 → 4.8）。等價於要求更明顯的 momentum 才啟動鎖利。
+
+### 11.4 ratchet 規則
+
+每根 K 線收盤後 controller 計算候選 stop。**只有「對倉位更有利」才更新**：
+- 多單：candidate > current_stop 才 ratchet
+- 空單：candidate < current_stop 才 ratchet
+- 不利方向（Bollinger 回勾、價格震盪）→ 維持原值
+
+### 11.5 介面
+
+```python
+# 在 fill 後 instantiate（一筆持倉一個 controller）
+controller = TrailingStopController(
+    position=account.position,
+    params=strategy.params.trailing,   # TrailingStopParams
+    broker_config=broker.config,        # 用 fee/slippage 計算成本
+)
+
+# 每根 bar 收盤呼叫
+new_stop = controller.update(bar, df, bar_index, current_stop=position.stop_price)
+if new_stop is not None:
+    account.update_stop(new_stop)
+
+# 持倉結束（止損觸發或 force_close）→ controller 廢棄
+```
+
+### 11.6 與其他模組的關係
+
+```
+strategy.detect_entry(bar t close)
+    ↓ EntrySignal(initial_stop = swing-based)
+engine: bar t+1 open fill
+    ↓ instantiate TrailingStopController
+controller.update(bar) per bar close
+    ↓ stage transitions: 1 → 2 → 3
+    ↓ ratchet candidate
+account.update_stop(new_stop)
+broker.check_stop(account, bar)  # 用最新 stop 撮合
+```
+
+---
+
+## 十一、後續驗證模組（占位，待核心完成後實作）
 
 > 待 M1~M5（核心策略 + 回測引擎 + 合併權益）完成、單一回測流程穩定後再展開。
 > 此處先預留模組位置與輸入/輸出介面，避免日後加入時要回頭重構。
@@ -522,7 +607,7 @@ backtest.engine → BacktestResult
 
 ---
 
-## 十一、Python 3.14 套件相容性備註
+## 十二、Python 3.14 套件相容性備註
 
 - `pandas`、`numpy`、`pyarrow`：應該 OK
 - `matplotlib`：應該 OK
