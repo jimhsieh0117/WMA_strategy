@@ -1,21 +1,23 @@
-"""空頭趨勢策略 — 對應 空頭趨勢策略_v2.md + ARCHITECTURE.md §11 三階段止損。
+"""空頭趨勢策略 — 對應 空頭趨勢策略_v2.md + ARCHITECTURE.md §10 三階段止損。
 
-進場條件（Bar[t] 收盤後判斷）：
+進場條件（Bar[t] 收盤後判斷，K 線來源由 ``entry_source`` 切換）：
 
   條件 1（死亡交叉）：
-    HA_WMA_fast[t]   <  HA_WMA_slow[t]
-    HA_WMA_fast[t-1] >= HA_WMA_slow[t-1]
+    WMA_fast[t]   <  WMA_slow[t]
+    WMA_fast[t-1] >= WMA_slow[t-1]
 
   條件 2（趨勢結構確認）：
-    HA_Close[t-2] > HA_Close[t]
-    HA_Close[t-3] > HA_Close[t]
+    Close[t-2] > Close[t]
+    Close[t-3] > Close[t]
 
 兩條件同時成立 → 產生 ENTRY 訊號。
 
-初始止損（Stage 1）：
-    initial_stop = max(high over [t - swing_lookback + 1 .. t]) × (1 + slippage_buffer)
+``entry_source`` 切換規則：
+- ``"ha"``：用 ha_wma_fast / ha_wma_slow / ha_close
+- ``"raw"``：用 wma_fast / wma_slow / close
 
-Stage 2 / Stage 3 止損由 ``TrailingStopController`` 處理。
+初始止損（Stage 1）始終用原始 K 線 swing high：
+    initial_stop = max(high over [t - swing_lookback + 1 .. t]) × (1 + slippage_buffer)
 
 Look-ahead 防護：只讀 ``df.iloc[: bar_index + 1]``。
 """
@@ -43,19 +45,26 @@ class ShortTrendStrategy(BaseTrendStrategy):
         if bar_index < 3:
             return None
 
-        wma_fast = df["ha_wma_fast"]
-        wma_slow = df["ha_wma_slow"]
-        ha_close = df["ha_close"]
+        if self.params.entry_source == "ha":
+            wma_fast = df["ha_wma_fast"]
+            wma_slow = df["ha_wma_slow"]
+            close = df["ha_close"]
+            source_tag = "HA"
+        else:  # "raw"
+            wma_fast = df["wma_fast"]
+            wma_slow = df["wma_slow"]
+            close = df["close"]
+            source_tag = "RAW"
 
         wma_f_t = wma_fast.iat[bar_index]
         wma_f_prev = wma_fast.iat[bar_index - 1]
         wma_s_t = wma_slow.iat[bar_index]
         wma_s_prev = wma_slow.iat[bar_index - 1]
-        hc_t = ha_close.iat[bar_index]
-        hc_t2 = ha_close.iat[bar_index - 2]
-        hc_t3 = ha_close.iat[bar_index - 3]
+        c_t = close.iat[bar_index]
+        c_t2 = close.iat[bar_index - 2]
+        c_t3 = close.iat[bar_index - 3]
 
-        for v in (wma_f_t, wma_f_prev, wma_s_t, wma_s_prev, hc_t, hc_t2, hc_t3):
+        for v in (wma_f_t, wma_f_prev, wma_s_t, wma_s_prev, c_t, c_t2, c_t3):
             if math.isnan(v):
                 return None
 
@@ -63,8 +72,8 @@ class ShortTrendStrategy(BaseTrendStrategy):
         if not ((wma_f_t < wma_s_t) and (wma_f_prev >= wma_s_prev)):
             return None
 
-        # 條件 2：交叉前 -2 / -3 根 HA_Close 高於當根
-        if not ((hc_t2 > hc_t) and (hc_t3 > hc_t)):
+        # 條件 2：交叉前 -2 / -3 根 close 高於當根
+        if not ((c_t2 > c_t) and (c_t3 > c_t)):
             return None
 
         # Stage 1 初始止損：前 N 根原始 K 線最高點，再往上 buffer
@@ -85,9 +94,9 @@ class ShortTrendStrategy(BaseTrendStrategy):
             timestamp=df.index[bar_index],
             initial_stop=initial_stop,
             reason=(
-                f"death_cross & structure: "
+                f"[{source_tag}] death_cross & structure: "
                 f"wma_f={wma_f_t:.4f} < wma_s={wma_s_t:.4f}, "
-                f"hc[-2]={hc_t2:.4f}, hc[-3]={hc_t3:.4f} > hc[0]={hc_t:.4f}, "
+                f"c[-2]={c_t2:.4f}, c[-3]={c_t3:.4f} > c[0]={c_t:.4f}, "
                 f"swing_high={swing_high:.4f}"
             ),
         )

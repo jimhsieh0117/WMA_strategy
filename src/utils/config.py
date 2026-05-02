@@ -77,6 +77,7 @@ class FullConfig:
     # strategy: entry
     wma_fast: int
     wma_slow: int
+    entry_source: str   # "ha" | "raw"
 
     # strategy: trailing stop
     trailing: TrailingConfig
@@ -92,6 +93,7 @@ class FullConfig:
 
 _VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1H", "4H"}
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
+_VALID_ENTRY_SOURCES = {"ha", "raw"}
 
 
 def load_config(path: str | Path) -> FullConfig:
@@ -140,6 +142,12 @@ def load_config(path: str | Path) -> FullConfig:
     # ---- strategy: entry ----
     wma_fast = int(strategy["wma_fast"])
     wma_slow = int(strategy["wma_slow"])
+    entry_source = str(strategy.get("entry_source", "ha")).lower()
+    if entry_source not in _VALID_ENTRY_SOURCES:
+        raise ConfigError(
+            f"strategy.entry_source '{entry_source}' invalid; "
+            f"must be one of {sorted(_VALID_ENTRY_SOURCES)}"
+        )
 
     # ---- strategy: trailing ----
     trailing_raw = strategy.get("trailing", {})
@@ -178,6 +186,7 @@ def load_config(path: str | Path) -> FullConfig:
         slippage_pct=slip,
         wma_fast=wma_fast,
         wma_slow=wma_slow,
+        entry_source=entry_source,
         trailing=trailing,
         output_dir=output_dir,
         show_progress=show_progress,

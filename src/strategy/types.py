@@ -9,11 +9,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 import pandas as pd
 
 from src.utils.exceptions import ConfigError
 from src.utils.types import Direction
+
+
+# 進場訊號可使用的 K 線來源
+EntrySource = Literal["ha", "raw"]
+VALID_ENTRY_SOURCES: tuple[str, ...] = ("ha", "raw")
 
 
 # --------------------------------------------------------------------------- #
@@ -97,6 +103,12 @@ class StrategyParams:
     # ---- 進場條件 ----
     wma_fast: int = 2
     wma_slow: int = 4
+    entry_source: EntrySource = "ha"
+    """進場訊號使用的 K 線來源：
+        "ha"  = Heikin-Ashi 平均 K 線（預設、原本設計）
+        "raw" = 原始 K 線（OHLC + close）
+    止損計算（三階段）始終使用原始 K 線，不受此參數影響。
+    """
 
     # ---- 拖曳止損子設定 ----
     trailing: TrailingStopParams = field(default_factory=TrailingStopParams)
@@ -109,6 +121,11 @@ class StrategyParams:
         if self.wma_fast >= self.wma_slow:
             raise ConfigError(
                 f"wma_fast ({self.wma_fast}) must be < wma_slow ({self.wma_slow})"
+            )
+        if self.entry_source not in VALID_ENTRY_SOURCES:
+            raise ConfigError(
+                f"entry_source must be one of {VALID_ENTRY_SOURCES}, "
+                f"got {self.entry_source!r}"
             )
 
     @property

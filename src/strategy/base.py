@@ -23,6 +23,9 @@ from src.utils.types import Direction
 from src.utils.validation import validate_ohlc
 
 # 指標準備後 df 必含的欄位（策略 + 拖曳止損都會用到）
+# - HA 系列：entry_source="ha" 用
+# - 原始 WMA：entry_source="raw" 用
+# - Bollinger：Stage 3 拖曳止損用（不論 entry_source）
 REQUIRED_INDICATOR_COLUMNS: tuple[str, ...] = (
     "ha_open",
     "ha_high",
@@ -30,6 +33,8 @@ REQUIRED_INDICATOR_COLUMNS: tuple[str, ...] = (
     "ha_close",
     "ha_wma_fast",
     "ha_wma_slow",
+    "wma_fast",
+    "wma_slow",
     "bb_middle",
     "bb_upper",
     "bb_lower",
@@ -39,23 +44,24 @@ REQUIRED_INDICATOR_COLUMNS: tuple[str, ...] = (
 def prepare_indicators(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame:
     """為原始 OHLCV 加上策略 + 拖曳止損所需的全部指標欄。
 
+    一律算齊兩種 entry_source 用的 WMA，避免 engine 間切換時要重算指標。
+    成本很低（一個額外 WMA call），可換取 config-driven 切換的彈性。
+
     依序計算：
-    1. Heikin-Ashi（ha_open / ha_high / ha_low / ha_close）  ← 進場訊號用
-    2. HA_WMA_fast / HA_WMA_slow（基於 ha_close）            ← 進場訊號用
-    3. Bollinger Band（基於原始 close，WMA 中軌、2σ）        ← Stage 3 拖曳用
-
-    Args:
-        df: 原始 OHLCV，DatetimeIndex + 小寫欄位。
-        params: 策略參數。
-
-    Returns:
-        新 DataFrame，含原始欄 + 全部指標欄。
+    1. Heikin-Ashi（ha_open / ha_high / ha_low / ha_close）  ← entry_source="ha" 用
+    2. HA_WMA_fast / HA_WMA_slow（基於 ha_close）            ← entry_source="ha" 用
+    3. WMA_fast / WMA_slow（基於原始 close）                  ← entry_source="raw" 用
+    4. Bollinger Band（基於原始 close，WMA 中軌、2σ）        ← Stage 3 拖曳用（永遠）
     """
     validate_ohlc(df, require_volume=True)
 
     out = compute_ha(df)
+    # HA 路線
     out["ha_wma_fast"] = wma(out["ha_close"], params.wma_fast)
     out["ha_wma_slow"] = wma(out["ha_close"], params.wma_slow)
+    # 原始 K 線路線
+    out["wma_fast"] = wma(df["close"], params.wma_fast)
+    out["wma_slow"] = wma(df["close"], params.wma_slow)
 
     bb_mid, bb_up, bb_lo = bollinger_bands(
         df["close"],
