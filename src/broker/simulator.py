@@ -104,12 +104,22 @@ class BrokerSimulator:
                 ),
             )
 
-        notional = order.quantity * fill_price
+        # 若 fill_price 因 cap 而與 limit_price 不同，重新計算 quantity
+        # 以維持「目標 notional = order.quantity × order.limit_price」恆等。
+        # 避免 LONG cap 時 actual notional < target、SHORT cap 時 > target 的不對稱
+        # （engine 在 limit_price 上計算的 quantity 隱含目標 60% equity 暴露）。
+        target_notional = order.quantity * order.limit_price
+        if fill_price != order.limit_price:
+            actual_quantity = target_notional / fill_price
+        else:
+            actual_quantity = order.quantity
+
+        notional = actual_quantity * fill_price  # = target_notional
         fee = notional * self.config.taker_fee_rate
 
         account.open_position(
             direction=order.direction,
-            quantity=order.quantity,
+            quantity=actual_quantity,
             entry_price=fill_price,
             entry_timestamp=bar.timestamp,
             stop_price=order.initial_stop,

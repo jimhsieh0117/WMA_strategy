@@ -204,10 +204,11 @@ class TestEngineTrailingIntegration:
 
         # stop 應遠超 entry（進獲利區）
         assert acct.has_position()
-        # stop 應 >= stage 2 fixed = entry × (1 + 0.0013) + 0.2R
+        # stop 應 >= stage 2 fixed = entry × (1 + 2×taker) + 0.2R
+        # （滑點已在 entry_price，不再加 slippage_pct）
         entry = acct.position.entry_price
         R = abs(entry - 80.0)
-        expected_min = entry * 1.0013 + 0.2 * R
+        expected_min = entry * 1.0010 + 0.2 * R
         assert acct.position.stop_price >= expected_min
 
     def test_long_no_ratchet_when_price_stagnant(self) -> None:

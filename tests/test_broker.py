@@ -288,6 +288,41 @@ class TestBrokerLimitFill:
         assert res.filled
         assert res.fill_price == 999.5  # capped at bar.low
 
+    def test_long_quantity_renormalized_when_capped(self) -> None:
+        """LONG cap 時，actual notional 應仍等於 target notional（quantity 重新算）。"""
+        bar = _bar(TS1, o=1000.0, h=1000.5, l=999.5, c=1000.2)
+        # target notional = 1.0 × 1001.0 = 1001
+        order = LimitOrder(Direction.LONG, limit_price=1001.0, quantity=1.0, initial_stop=995.0)
+        res = self.broker.try_fill_limit(order, bar, self.account)
+        assert res.filled
+        # fill capped to 1000.5；actual quantity 應 = 1001 / 1000.5 ≈ 1.0005
+        actual_quantity = self.account.position.quantity
+        assert actual_quantity == pytest.approx(1001.0 / 1000.5)
+        actual_notional = actual_quantity * res.fill_price
+        assert actual_notional == pytest.approx(1001.0)
+
+    def test_short_quantity_renormalized_when_capped(self) -> None:
+        """SHORT cap 時 (fill > limit) 時 quantity 應減少以維持 target notional。"""
+        bar = _bar(TS1, o=1000.0, h=1000.5, l=999.5, c=1000.2)
+        # target notional = 1.0 × 999.0 = 999
+        order = LimitOrder(Direction.SHORT, limit_price=999.0, quantity=1.0, initial_stop=1005.0)
+        res = self.broker.try_fill_limit(order, bar, self.account)
+        assert res.filled
+        # fill capped to 999.5；actual quantity 應 = 999 / 999.5 ≈ 0.9995
+        actual_quantity = self.account.position.quantity
+        assert actual_quantity == pytest.approx(999.0 / 999.5)
+        actual_notional = actual_quantity * res.fill_price
+        assert actual_notional == pytest.approx(999.0)
+
+    def test_quantity_unchanged_when_no_cap(self) -> None:
+        """fill_price == limit_price 時 quantity 不動。"""
+        bar = _bar(TS1, o=1000.0, h=1001.5, l=999.0, c=1000.5)
+        order = LimitOrder(Direction.LONG, limit_price=1000.5, quantity=2.0, initial_stop=995.0)
+        res = self.broker.try_fill_limit(order, bar, self.account)
+        assert res.filled
+        assert res.fill_price == 1000.5  # 不需 cap
+        assert self.account.position.quantity == pytest.approx(2.0)
+
     def test_long_stop_above_fill_after_cap_aborts(self) -> None:
         """訊號 bar 算的 stop 跨 bar 後高過實際 fill_price → 放棄進場（不 raise）。"""
         # bar.high = 1000.05；limit = 1001.0 被 cap 到 1000.05；

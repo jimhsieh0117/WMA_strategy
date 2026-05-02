@@ -79,10 +79,10 @@ class TrailingStopController:
                 f"R = |entry - initial_stop| must be > 0, got {self.R}"
             )
 
-        # 異常 R 偵測：R < (taker×2 + slippage) × entry_price
-        cost_pct = (
-            2 * broker_config.taker_fee_rate + broker_config.slippage_pct
-        )
+        # 異常 R 偵測：R < 雙向手續費的價格距離。
+        # 滑點已內含在 entry_price 中（engine 用 open × (1 ± slippage_pct) 為 limit），
+        # 因此「成本」只計入需在 stop 平倉時補回的雙向 taker fee；slippage 不重複計。
+        cost_pct = 2 * broker_config.taker_fee_rate
         cost_distance = self.entry_price * cost_pct
         self.is_abnormal_r = self.R < cost_distance
 
@@ -205,11 +205,13 @@ class TrailingStopController:
         return min(stage2_value, bb_value)
 
     def _stage2_breakeven_stop(self) -> float:
-        """保本 + 雙向手續費 + 滑點 + buffer_r×R。"""
-        cost_pct = (
-            2 * self.broker_config.taker_fee_rate
-            + self.broker_config.slippage_pct
-        )
+        """保本 + 雙向手續費 + buffer_r×R。
+
+        滑點已隱含於 entry_price（fill = open × (1 ± slippage_pct)）；
+        若再加 slippage_pct 將重複計算。回測模型未對 stop 模擬負滑，
+        因此只需補回 entry/exit 兩次 taker fee 即可達真正保本。
+        """
+        cost_pct = 2 * self.broker_config.taker_fee_rate
         buffer = self.params.stage2_buffer_r * self.R
         if self.direction is Direction.LONG:
             return self.entry_price * (1 + cost_pct) + buffer

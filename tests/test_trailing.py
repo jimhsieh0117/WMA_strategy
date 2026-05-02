@@ -155,9 +155,10 @@ class TestStage2Transition:
         bar = _bar(o=100.0, h=106.5, l=99.5, c=105.0)
         result = ctrl.update(bar, df, 0, current_stop=95.0)
         assert ctrl.stage == 2
-        # stage 2 stop = entry × (1 + 2×0.0005 + 0.0003) + 0.2 × R
-        #             = 100 × 1.0013 + 1.0 = 100.13 + 1.0 = 101.13
-        assert result == pytest.approx(101.13)
+        # stage 2 stop = entry × (1 + 2×taker) + 0.2 × R
+        #             = 100 × 1.0010 + 1.0 = 100.10 + 1.0 = 101.10
+        # （滑點已隱含於 entry_price，不再重複計）
+        assert result == pytest.approx(101.10)
 
     def test_short_triggers_at_1_2R(self) -> None:
         ctrl = TrailingStopController(
@@ -170,8 +171,8 @@ class TestStage2Transition:
         bar = _bar(o=100.0, h=100.5, l=93.5, c=95.0)
         result = ctrl.update(bar, df, 0, current_stop=105.0)
         assert ctrl.stage == 2
-        # stage 2 stop = 100 × (1 − 0.0013) − 1.0 = 99.87 − 1.0 = 98.87
-        assert result == pytest.approx(98.87)
+        # stage 2 stop = 100 × (1 − 0.0010) − 1.0 = 99.90 − 1.0 = 98.90
+        assert result == pytest.approx(98.90)
 
     def test_no_transition_below_threshold(self) -> None:
         ctrl = TrailingStopController(
@@ -203,7 +204,7 @@ class TestStage3Bollinger:
         bar = _bar(o=100.0, h=113.0, l=99.5, c=112.0)
         result = ctrl.update(bar, df, 0, current_stop=95.0)
         assert ctrl.stage == 3
-        # stage 2 fixed = 101.13；Bollinger lower = 103
+        # stage 2 fixed = 101.10；Bollinger lower = 103
         # 多單取較高（較有利）= 103
         assert result == pytest.approx(103.0)
 
@@ -213,12 +214,12 @@ class TestStage3Bollinger:
             params=TrailingStopParams(),
             broker_config=_broker_cfg(),
         )
-        # Bollinger lower = 90，低於 stage 2 fixed 101.13 → stop 仍取 stage2
+        # Bollinger lower = 90，低於 stage 2 fixed 101.10 → stop 仍取 stage2
         df = _make_df(5, bb_lower_const=90.0)
         bar = _bar(o=100.0, h=113.0, l=99.5, c=112.0)
         result = ctrl.update(bar, df, 0, current_stop=95.0)
         assert ctrl.stage == 3
-        assert result == pytest.approx(101.13)
+        assert result == pytest.approx(101.10)
 
     def test_short_uses_bollinger_upper(self) -> None:
         ctrl = TrailingStopController(
@@ -226,7 +227,7 @@ class TestStage3Bollinger:
             params=TrailingStopParams(),
             broker_config=_broker_cfg(),
         )
-        # Bollinger upper = 97（低於 stage 2 fixed 98.87）→ 空單取較低 = 97
+        # Bollinger upper = 97（低於 stage 2 fixed 98.90）→ 空單取較低 = 97
         df = _make_df(5, bb_upper_const=97.0)
         bar = _bar(o=100.0, h=100.5, l=87.0, c=88.0)  # progress = 2.6R
         result = ctrl.update(bar, df, 0, current_stop=105.0)
@@ -249,8 +250,8 @@ class TestRatchet:
         # 進 stage 3，但 Bollinger lower 低於目前 stop 102 → 不應更新
         bar = _bar(o=100.0, h=113.0, l=99.5, c=112.0)
         result = ctrl.update(bar, df, 0, current_stop=102.0)
-        # stage2_value = 101.13、bb_lower = 80 → max = 101.13
-        # 但 current_stop=102 已比 101.13 高 → ratchet 拒絕
+        # stage2_value = 101.10、bb_lower = 80 → max = 101.10
+        # 但 current_stop=102 已比 101.10 高 → ratchet 拒絕
         assert result is None
 
     def test_short_does_not_increase_stop(self) -> None:
@@ -261,7 +262,7 @@ class TestRatchet:
         )
         df = _make_df(5, bb_upper_const=120.0)
         bar = _bar(o=100.0, h=100.5, l=87.0, c=88.0)
-        # current_stop=98 已比 stage2_value 98.87 低（更有利）→ ratchet 拒絕
+        # current_stop=98 已比 stage2_value 98.90 低（更有利）→ ratchet 拒絕
         result = ctrl.update(bar, df, 0, current_stop=98.0)
         assert result is None
 
