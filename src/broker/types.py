@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -118,6 +118,9 @@ class FillResult:
 class Position:
     """當前持倉。``stop_price`` 為 mutable：engine 在每根 K 線收盤後可呼叫
     ``Account.update_stop`` 進行 ratchet 更新。
+
+    ``stop_history`` 記錄止損的每次變動（含初始值），用於圖表呈現
+    Stage 1→2→3 跳躍與 Stage 3 ratchet 的軌跡。
     """
 
     direction: Direction
@@ -126,6 +129,7 @@ class Position:
     entry_timestamp: pd.Timestamp
     stop_price: float
     entry_fee: float
+    stop_history: list[tuple[pd.Timestamp, float]] = field(default_factory=list)
 
     @property
     def notional_at_entry(self) -> float:
@@ -142,7 +146,11 @@ class Position:
 
 @dataclass(frozen=True)
 class Trade:
-    """完整的一筆來回交易（已平倉）。"""
+    """完整的一筆來回交易（已平倉）。
+
+    ``stop_history`` 為這筆交易期間止損每次變動的時間序列，含初始值；
+    用於視覺化呈現三階段 stop 軌跡。
+    """
 
     direction: Direction
     quantity: float
@@ -156,6 +164,7 @@ class Trade:
     net_pnl: float
     return_pct: float
     exit_reason: str
+    stop_history: tuple[tuple[pd.Timestamp, float], ...] = ()
 
     @property
     def holding_duration(self) -> pd.Timedelta:

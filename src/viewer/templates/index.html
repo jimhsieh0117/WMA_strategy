@@ -86,7 +86,7 @@
 
   <script>
   (async () => {
-    const { createChart, LineStyle, ColorType, CrosshairMode, PriceScaleMode } = LightweightCharts;
+    const { createChart, LineStyle, LineType, ColorType, CrosshairMode, PriceScaleMode } = LightweightCharts;
 
     // ----- 取資料 -----
     let data;
@@ -213,6 +213,47 @@
       });
       series.setData(s.data);
     });
+
+    // ----- 持倉連線（entry → exit；綠線=賺、紅線=賠）-----
+    if (data.trade_lines) {
+      const holdingSeriesConfig = [
+        { key: 'holding_wins',   title: 'Holding (Win)',  color: '#16a34a' },
+        { key: 'holding_losses', title: 'Holding (Loss)', color: '#dc2626' },
+      ];
+      holdingSeriesConfig.forEach(cfg => {
+        const points = data.trade_lines[cfg.key] || [];
+        if (points.length === 0) return;
+        const series = mainChart.addLineSeries({
+          color: cfg.color,
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          title: cfg.title,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        series.setData(points);
+      });
+
+      // ----- 止損軌道（階梯狀；持倉期間 stop 變化）-----
+      const stopSeriesConfig = [
+        { key: 'long_stops',  title: 'Long Stop',  color: '#fb923c' },
+        { key: 'short_stops', title: 'Short Stop', color: '#fb923c' },
+      ];
+      stopSeriesConfig.forEach(cfg => {
+        const points = data.trade_lines[cfg.key] || [];
+        if (points.length === 0) return;
+        const series = mainChart.addLineSeries({
+          color: cfg.color,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          lineType: LineType.WithSteps,
+          title: cfg.title,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        series.setData(points);
+      });
+    }
 
     // markers：long / short 的進出場
     const markers = [];

@@ -27,7 +27,7 @@ strategy:
   # 進場條件
   wma_fast: 2
   wma_slow: 4
-  entry_source: ha   # ha = Heikin-Ashi 平均K（預設）；raw = 原始 K 線
+  entry_source: raw   # ha = Heikin-Ashi 平均K（預設）；raw = 原始 K 線
                      # 切換只影響「進場訊號」用哪個 K，止損永遠用原始 K
 
   # 三階段止損（ARCHITECTURE.md §11）

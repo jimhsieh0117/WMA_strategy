@@ -80,6 +80,87 @@ def _trade_records(trades: list[Trade]) -> list[dict]:
     ]
 
 
+# --------------------------------------------------------------------------- #
+# Trade-derived overlays（持倉連線 + 止損軌道）
+# --------------------------------------------------------------------------- #
+
+def _holding_line_data(trades: list[Trade], *, win: bool) -> list[dict]:
+    """為主圖建立「持倉連線」series：每筆交易兩個點（entry → exit），
+    交易之間以 whitespace（無 value 的 point）斷開。
+
+    LWC 規定 series 內 time 嚴格遞增。同個 series 內若多筆 trades 共用
+    某個秒級時間（如同一根 K 線恰為前筆 exit 與後筆 entry），第二筆會被略過。
+    """
+    selected = sorted(
+        (t for t in trades if (t.net_pnl > 0) == win),
+        key=lambda t: t.entry_timestamp,
+    )
+    out: list[dict] = []
+    last_time = -1
+    for t in selected:
+        et = _to_unix_seconds(t.entry_timestamp)
+        xt = _to_unix_seconds(t.exit_timestamp)
+        # 插入 whitespace 斷開上一筆
+        if out:
+            gap_t = max(last_time + 1, et - 1)
+            if gap_t < et and gap_t > last_time:
+                out.append({"time": gap_t})
+            elif gap_t == et:
+                # 沒法塞 whitespace（兩筆 trade 緊鄰）→ 跳過此筆，避免時序衝突
+                continue
+        # entry / exit 點
+        if et <= last_time:
+            continue
+        out.append({"time": et, "value": float(t.entry_price)})
+        last_time = et
+        if xt <= last_time:
+            # exit 與 entry 同時刻（極短同根 trade）→ 跳此筆，避免重複
+            out.pop()
+            last_time = out[-1]["time"] if out else -1
+            continue
+        out.append({"time": xt, "value": float(t.exit_price)})
+        last_time = xt
+    return out
+
+
+def _stop_track_data(trades: list[Trade]) -> list[dict]:
+    """每筆交易的 stop 軌道：依 stop_history 取點，最後追加 (exit_ts, last_stop)
+    讓階梯線延伸到出場；交易間以 whitespace 斷開。
+    """
+    out: list[dict] = []
+    last_time = -1
+    for t in sorted(trades, key=lambda x: x.entry_timestamp):
+        if not t.stop_history:
+            continue
+        # 完整序列 = stop_history + (exit_ts, last_stop)
+        history = list(t.stop_history)
+        last_stop = history[-1][1]
+        history.append((t.exit_timestamp, last_stop))
+
+        seg: list[dict] = []
+        seg_last = last_time
+        for ts, stop in history:
+            ut = _to_unix_seconds(ts)
+            if ut <= seg_last:
+                continue
+            seg.append({"time": ut, "value": float(stop)})
+            seg_last = ut
+
+        if not seg:
+            continue
+        # 插入 whitespace 斷開
+        if out:
+            gap_t = seg[0]["time"] - 1
+            if gap_t > last_time:
+                out.append({"time": gap_t})
+            else:
+                # 緊鄰，無法插斷 → 略過此筆
+                continue
+        out.extend(seg)
+        last_time = seg[-1]["time"]
+    return out
+
+
 def _metrics_summary(m: MetricsReport) -> dict:
     """為 header 顯示縮減版 metrics（避免 JSON 巨大）。"""
     return {
@@ -159,6 +240,16 @@ def build_app(
         "trades": {
             "long": _trade_records(long_result.trades),
             "short": _trade_records(short_result.trades),
+        },
+        "trade_lines": {
+            "holding_wins": _holding_line_data(
+                long_result.trades + short_result.trades, win=True,
+            ),
+            "holding_losses": _holding_line_data(
+                long_result.trades + short_result.trades, win=False,
+            ),
+            "long_stops": _stop_track_data(long_result.trades),
+            "short_stops": _stop_track_data(short_result.trades),
         },
         "equity": {
             "long": _line_records(long_result.equity_curve),

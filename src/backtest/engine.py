@@ -165,7 +165,7 @@ def run_backtest(
             )
             if new_stop is not None:
                 old_stop = account.position.stop_price
-                account.update_stop(new_stop)
+                account.update_stop(new_stop, timestamp=ts)
                 logger.debug(
                     "RATCHET %s stop %.4f -> %.4f (stage=%d)",
                     account.position.direction, old_stop, new_stop, trailing.stage,

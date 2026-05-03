@@ -116,6 +116,7 @@ class Account:
             entry_timestamp=entry_timestamp,
             stop_price=float(stop_price),
             entry_fee=float(fee),
+            stop_history=[(entry_timestamp, float(stop_price))],
         )
 
     def close_position(
@@ -158,18 +159,26 @@ class Account:
             net_pnl=float(net_pnl),
             return_pct=float(return_pct),
             exit_reason=reason,
+            stop_history=tuple(pos.stop_history),
         )
         self._trade_log.append(trade)
         self._position = None
         return trade
 
-    def update_stop(self, new_stop: float) -> None:
+    def update_stop(
+        self,
+        new_stop: float,
+        timestamp: pd.Timestamp | None = None,
+    ) -> None:
         """直接覆寫止損價。
 
         ratchet 規則（多單只能上移、空單只能下移）由 engine 判斷後才呼叫此方法。
         本方法只檢查 ``new_stop > 0``，不檢查與 entry_price 相對位置——
         因為拖曳止損可能移入利潤區（multi-bar 持有時 stop 可超越 entry），
         該情境合法。
+
+        若提供 ``timestamp``，則同步寫入 ``position.stop_history``（圖表呈現用）。
+        測試中可省略以維持簡潔。
         """
         if self._position is None:
             raise AccountInvariantError(
@@ -178,6 +187,8 @@ class Account:
         if new_stop <= 0:
             raise AccountInvariantError(f"new_stop must be > 0, got {new_stop}")
         self._position.stop_price = float(new_stop)
+        if timestamp is not None:
+            self._position.stop_history.append((timestamp, float(new_stop)))
 
     def snapshot_equity(self, mark_price: float, timestamp: pd.Timestamp) -> None:
         """記錄當下 equity 至歷史，供日後績效計算使用。"""
