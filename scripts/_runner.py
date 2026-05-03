@@ -113,7 +113,9 @@ def run_single_strategy(
     account = Account(cfg.initial_capital, name=label)
     strategy = _build_strategy(direction, params)
     engine_cfg = EngineConfig(
+        sizing_mode=cfg.sizing_mode,  # type: ignore[arg-type]
         position_size_pct=cfg.position_size_pct,
+        risk_per_trade_usdt=cfg.risk_per_trade_usdt,
         force_close_at_end=cfg.force_close_at_end,
     )
 

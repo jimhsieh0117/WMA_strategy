@@ -98,17 +98,25 @@ def run_backtest(
             )
             equity_now = account.equity(bar.open)
             if equity_now > 0 and limit_price > 0:
-                quantity = (equity_now * config.position_size_pct) / limit_price
+                quantity, target_risk, sizing_ok = _compute_quantity(
+                    config=config,
+                    direction=pending_signal.direction,
+                    limit_price=limit_price,
+                    initial_stop=pending_signal.initial_stop,
+                    equity_now=equity_now,
+                    taker_fee_rate=broker.config.taker_fee_rate,
+                )
 
                 stop_ok = _stop_on_correct_side(
                     pending_signal.direction, pending_signal.initial_stop, limit_price
                 )
-                if quantity > 0 and stop_ok:
+                if sizing_ok and quantity > 0 and stop_ok:
                     order = LimitOrder(
                         direction=pending_signal.direction,
                         limit_price=limit_price,
                         quantity=quantity,
                         initial_stop=pending_signal.initial_stop,
+                        target_risk_usdt=target_risk,
                     )
                     try:
                         result = broker.try_fill_limit(order, bar, account)
@@ -137,12 +145,20 @@ def run_backtest(
                         logger.debug("UNFILLED %s: %s", pending_signal.direction, result.reason)
                 else:
                     signals_unfilled += 1
-                    logger.debug(
-                        "SKIP_FILL %s: stop %.4f wrong side of limit %.4f",
-                        pending_signal.direction,
-                        pending_signal.initial_stop,
-                        limit_price,
-                    )
+                    if not sizing_ok:
+                        logger.debug(
+                            "SKIP_FILL %s: sizing rejected (mode=%s, "
+                            "limit=%.4f stop=%.4f equity=%.4f)",
+                            pending_signal.direction, config.sizing_mode,
+                            limit_price, pending_signal.initial_stop, equity_now,
+                        )
+                    else:
+                        logger.debug(
+                            "SKIP_FILL %s: stop %.4f wrong side of limit %.4f",
+                            pending_signal.direction,
+                            pending_signal.initial_stop,
+                            limit_price,
+                        )
             else:
                 signals_unfilled += 1
             pending_signal = None
@@ -253,6 +269,37 @@ def _stop_on_correct_side(
     if direction is Direction.LONG:
         return stop_price < limit_price
     return stop_price > limit_price
+
+
+def _compute_quantity(
+    *,
+    config: EngineConfig,
+    direction: Direction,
+    limit_price: float,
+    initial_stop: float,
+    equity_now: float,
+    taker_fee_rate: float,
+) -> tuple[float, float | None, bool]:
+    """依 ``sizing_mode`` 計算下單 quantity。
+
+    Returns:
+        (quantity, target_risk_usdt | None, sizing_ok)
+        - sizing_ok=False 代表此筆訂單應被拒絕（如 risk 模式下過度槓桿）
+    """
+    if config.sizing_mode == "pct":
+        quantity = (equity_now * config.position_size_pct) / limit_price
+        return quantity, None, True
+
+    # risk 模式：qty = R / [|limit-stop| + (limit+stop)×taker]
+    denom = abs(limit_price - initial_stop) + (limit_price + initial_stop) * taker_fee_rate
+    if denom <= 0:
+        return 0.0, None, False
+    quantity = config.risk_per_trade_usdt / denom
+    notional = quantity * limit_price
+    if notional > equity_now:
+        # 過槓桿 → 拒絕進場（CLAUDE.md §5 fail-fast 同精神：寧可不交易）
+        return 0.0, None, False
+    return quantity, config.risk_per_trade_usdt, True
 
 
 def _serialize_params(params) -> dict:

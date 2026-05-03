@@ -88,8 +88,14 @@ def _holding_line_data(trades: list[Trade], *, win: bool) -> list[dict]:
     """為主圖建立「持倉連線」series：每筆交易兩個點（entry → exit），
     交易之間以 whitespace（無 value 的 point）斷開。
 
-    LWC 規定 series 內 time 嚴格遞增。同個 series 內若多筆 trades 共用
-    某個秒級時間（如同一根 K 線恰為前筆 exit 與後筆 entry），第二筆會被略過。
+    Whitespace **一定要放在剛平倉後**（``last_exit + 1``），而不是下次進場前。
+    若放在下次進場前，LWC 在 LineType.WithSteps 模式下會把上一筆 exit 的
+    橫向 step 延伸到 whitespace 處（橫跨整個無持倉時段）；放在 exit+1 則
+    extension 寬度只剩 1 秒、視覺上不可見。Solid line type 雖無此延伸問題，
+    但同樣放在 exit+1 較安全並一致。
+
+    series 結尾另追加一個 whitespace，避免最後一筆持倉的 step / line 被
+    延伸到圖表右側邊緣。
     """
     selected = sorted(
         (t for t in trades if (t.net_pnl > 0) == win),
@@ -100,32 +106,34 @@ def _holding_line_data(trades: list[Trade], *, win: bool) -> list[dict]:
     for t in selected:
         et = _to_unix_seconds(t.entry_timestamp)
         xt = _to_unix_seconds(t.exit_timestamp)
-        # 插入 whitespace 斷開上一筆
-        if out:
-            gap_t = max(last_time + 1, et - 1)
-            if gap_t < et and gap_t > last_time:
-                out.append({"time": gap_t})
-            elif gap_t == et:
-                # 沒法塞 whitespace（兩筆 trade 緊鄰）→ 跳過此筆，避免時序衝突
-                continue
-        # entry / exit 點
         if et <= last_time:
             continue
-        out.append({"time": et, "value": float(t.entry_price)})
-        last_time = et
-        if xt <= last_time:
-            # exit 與 entry 同時刻（極短同根 trade）→ 跳此筆，避免重複
-            out.pop()
-            last_time = out[-1]["time"] if out else -1
+        if xt <= et:
             continue
+        # whitespace 放在「上一筆 exit 之後 1 秒」斷開上一筆
+        if out:
+            ws = last_time + 1
+            if ws < et:
+                out.append({"time": ws})
+            else:
+                # 緊鄰 → 略過本筆，避免時序衝突
+                continue
+        out.append({"time": et, "value": float(t.entry_price)})
         out.append({"time": xt, "value": float(t.exit_price)})
         last_time = xt
+    # 結尾再放一個 whitespace，避免延伸到右邊
+    if out:
+        out.append({"time": last_time + 1})
     return out
 
 
 def _stop_track_data(trades: list[Trade]) -> list[dict]:
     """每筆交易的 stop 軌道：依 stop_history 取點，最後追加 (exit_ts, last_stop)
     讓階梯線延伸到出場；交易間以 whitespace 斷開。
+
+    Whitespace 規則同 ``_holding_line_data``：放在 ``last_exit + 1``（不是
+    next_entry - 1），避免 ``LineType.WithSteps`` 把橫向 step 延伸到下根 K
+    （亦即「沒持倉時也看到 stop 線」）。
     """
     out: list[dict] = []
     last_time = -1
@@ -148,16 +156,18 @@ def _stop_track_data(trades: list[Trade]) -> list[dict]:
 
         if not seg:
             continue
-        # 插入 whitespace 斷開
+        # 把 whitespace 放在「上一筆 exit 之後 1 秒」
         if out:
-            gap_t = seg[0]["time"] - 1
-            if gap_t > last_time:
-                out.append({"time": gap_t})
+            ws = last_time + 1
+            if ws < seg[0]["time"]:
+                out.append({"time": ws})
             else:
-                # 緊鄰，無法插斷 → 略過此筆
-                continue
+                continue  # 緊鄰
         out.extend(seg)
         last_time = seg[-1]["time"]
+    # 結尾 whitespace，避免最後一筆 stop 階梯延伸到右邊
+    if out:
+        out.append({"time": last_time + 1})
     return out
 
 

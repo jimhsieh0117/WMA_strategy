@@ -149,10 +149,16 @@ def compute_metrics(
     sum_wins = sum(t.net_pnl for t in wins)
     sum_losses = sum(t.net_pnl for t in losses)
     profit_factor = (sum_wins / abs(sum_losses)) if sum_losses != 0 else 0.0
-    expectancy = (
-        (win_rate / 100.0) * avg_win + (1.0 - win_rate / 100.0) * avg_loss
-        if total_trades > 0 else 0.0
-    )
+
+    # 期望值（每筆預期 PnL）
+    #   公式：勝率 × 平均盈利 − 虧損率 × 平均虧損(取絕對值)
+    #   等價於 win_rate × avg_win + loss_rate × avg_loss（avg_loss 為負）
+    if total_trades > 0:
+        win_rate_frac = win_rate / 100.0
+        loss_rate_frac = 1.0 - win_rate_frac
+        expectancy = win_rate_frac * avg_win - loss_rate_frac * abs(avg_loss)
+    else:
+        expectancy = 0.0
 
     avg_holding = (
         float(np.mean([_holding_bars(t, timeframe) for t in trades]))

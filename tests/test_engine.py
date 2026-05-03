@@ -127,6 +127,46 @@ class TestEngineNoSignal:
         assert (result.equity_curve == acct.initial_capital).all()
 
 
+class TestEngineRiskSizing:
+    """risk 模式：撞 stop 時的虧損應接近 risk_per_trade_usdt。"""
+
+    def test_risk_mode_quantity_formula(self) -> None:
+        df = make_test_df(20)
+        # 構造：bar 12 必撞 stop（low=80）
+        df.iloc[12, df.columns.get_loc("low")] = 80.0
+        df.iloc[12, df.columns.get_loc("open")] = 99.0
+        df.iloc[12, df.columns.get_loc("close")] = 95.0
+        df.iloc[12, df.columns.get_loc("high")] = 99.5
+
+        acct, broker = _account_and_broker()
+        # initial_stop = 95；entry 約 bar11 open ≈ 99.5；R 約 5
+        strat = MockStrategy(Direction.LONG, entry_at=10, initial_stop=95.0)
+        cfg = EngineConfig(sizing_mode="risk", risk_per_trade_usdt=1.0)
+        result = run_backtest(df, strat, acct, broker, cfg)
+
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        # 虧損應 ≈ 1 USDT（含手續費）；允許 ±0.05 USDT 容錯
+        assert -1.05 < trade.net_pnl < -0.95, (
+            f"expected ~-1 USDT, got {trade.net_pnl:.4f}"
+        )
+
+    def test_risk_mode_rejects_when_overleveraged(self) -> None:
+        df = make_test_df(20)
+        # 把 stop 設得極接近 entry → R 太小 → notional 會爆
+        # entry 約 99.5、stop = 99.49 → R ≈ 0.01；risk=1 → qty ≈ 100 → notional ≈ 9950 > equity
+        acct, broker = _account_and_broker()
+        strat = MockStrategy(Direction.LONG, entry_at=10, initial_stop=99.49)
+        cfg = EngineConfig(sizing_mode="risk", risk_per_trade_usdt=1.0)
+        result = run_backtest(df, strat, acct, broker, cfg)
+
+        # 訊號發出但拒絕成交
+        assert result.signals_emitted == 1
+        assert result.signals_filled == 0
+        assert result.signals_unfilled >= 1
+        assert len(result.trades) == 0
+
+
 class TestEngineErrors:
     def test_empty_df_raises(self) -> None:
         df = make_test_df(0)

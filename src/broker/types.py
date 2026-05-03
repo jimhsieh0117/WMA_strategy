@@ -81,14 +81,19 @@ class LimitOrder:
     Attributes:
         direction: 方向。
         limit_price: 限價（Long 為上限、Short 為下限）。
-        quantity: 標的數量（如 ETH 顆數），必須 > 0。
+        quantity: 標的數量（如 ETH 顆數），engine 在 limit_price 上預估的值；
+            cap 後 broker 會依 ``target_risk_usdt`` 或維持 notional 重算。
         initial_stop: 成交後立即套用的止損價。
+        target_risk_usdt: 若非 None，broker 在 fill_price 確定後依風險公式
+            重算 quantity（`risk / [|fill - stop| + (fill + stop) × taker]`），
+            確保「撞 stop 時固定虧損」。預設 None 沿用舊版 notional 維持邏輯。
     """
 
     direction: Direction
     limit_price: float
     quantity: float
     initial_stop: float
+    target_risk_usdt: float | None = None
 
     def __post_init__(self) -> None:
         if self.limit_price <= 0:
@@ -97,6 +102,10 @@ class LimitOrder:
             raise ConfigError(f"quantity must be > 0, got {self.quantity}")
         if self.initial_stop <= 0:
             raise ConfigError(f"initial_stop must be > 0, got {self.initial_stop}")
+        if self.target_risk_usdt is not None and self.target_risk_usdt <= 0:
+            raise ConfigError(
+                f"target_risk_usdt must be > 0, got {self.target_risk_usdt}"
+            )
         # 方向 vs 止損相對位置在 Account.open_position 再驗一次（關注運行時）
 
 

@@ -104,17 +104,32 @@ class BrokerSimulator:
                 ),
             )
 
-        # 若 fill_price 因 cap 而與 limit_price 不同，重新計算 quantity
-        # 以維持「目標 notional = order.quantity × order.limit_price」恆等。
-        # 避免 LONG cap 時 actual notional < target、SHORT cap 時 > target 的不對稱
-        # （engine 在 limit_price 上計算的 quantity 隱含目標 60% equity 暴露）。
-        target_notional = order.quantity * order.limit_price
-        if fill_price != order.limit_price:
-            actual_quantity = target_notional / fill_price
+        # 依 sizing 模式重算 quantity（fill_price 與 limit_price 不同時尤其重要）：
+        # - target_risk_usdt 有指定 → 用「固定風險」公式以 fill_price 重算 qty，確保
+        #   撞 stop 時的虧損仍 ≈ risk_per_trade_usdt
+        # - 否則維持「目標 notional」恆等（避免 LONG cap 偏低、SHORT cap 偏高）
+        if order.target_risk_usdt is not None:
+            denom = (
+                abs(fill_price - order.initial_stop)
+                + (fill_price + order.initial_stop) * self.config.taker_fee_rate
+            )
+            if denom <= 0:
+                return FillResult(
+                    filled=False,
+                    reason=(
+                        f"cannot size by risk: |fill - stop| + cost = {denom}; "
+                        "denominator non-positive"
+                    ),
+                )
+            actual_quantity = order.target_risk_usdt / denom
         else:
-            actual_quantity = order.quantity
+            target_notional = order.quantity * order.limit_price
+            if fill_price != order.limit_price:
+                actual_quantity = target_notional / fill_price
+            else:
+                actual_quantity = order.quantity
 
-        notional = actual_quantity * fill_price  # = target_notional
+        notional = actual_quantity * fill_price
         fee = notional * self.config.taker_fee_rate
 
         account.open_position(

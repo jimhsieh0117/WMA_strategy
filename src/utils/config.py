@@ -68,6 +68,8 @@ class FullConfig:
     # account
     initial_capital: float
     position_size_pct: float
+    sizing_mode: str  # "pct" | "risk"
+    risk_per_trade_usdt: float
 
     # fees
     taker_fee_rate: float
@@ -94,6 +96,7 @@ class FullConfig:
 _VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1H", "4H"}
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 _VALID_ENTRY_SOURCES = {"ha", "raw"}
+_VALID_SIZING_MODES = {"pct", "risk"}
 
 
 def load_config(path: str | Path) -> FullConfig:
@@ -133,6 +136,17 @@ def load_config(path: str | Path) -> FullConfig:
     # ---- account ----
     initial_capital = float(account["initial_capital"])
     position_size_pct = float(account["position_size_pct"])
+    sizing_mode = str(account.get("sizing_mode", "pct")).lower()
+    if sizing_mode not in _VALID_SIZING_MODES:
+        raise ConfigError(
+            f"account.sizing_mode '{sizing_mode}' invalid; "
+            f"must be one of {sorted(_VALID_SIZING_MODES)}"
+        )
+    risk_per_trade_usdt = float(account.get("risk_per_trade_usdt", 1.0))
+    if risk_per_trade_usdt <= 0:
+        raise ConfigError(
+            f"account.risk_per_trade_usdt must be > 0, got {risk_per_trade_usdt}"
+        )
 
     # ---- fees ----
     taker = float(fees["taker_fee_rate"])
@@ -181,6 +195,8 @@ def load_config(path: str | Path) -> FullConfig:
         out_of_sample=oos,
         initial_capital=initial_capital,
         position_size_pct=position_size_pct,
+        sizing_mode=sizing_mode,
+        risk_per_trade_usdt=risk_per_trade_usdt,
         taker_fee_rate=taker,
         maker_fee_rate=maker,
         slippage_pct=slip,

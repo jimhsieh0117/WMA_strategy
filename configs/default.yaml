@@ -9,14 +9,23 @@ data:
 period:
   in_sample:
     start: 2023-01-01
-    end:   2025-12-31
+    end:   2023-12-31
   out_of_sample:
     start: 2025-01-01
     end:   null   # null = 用到資料最後一根
 
 account:
-  initial_capital: 500.0    # USDT，多空各 500
-  position_size_pct: 0.60   # 每筆倉位佔當前 equity 的比例
+  initial_capital: 500.0          # USDT，多空各 500
+
+  # 倉位計算模式
+  #   pct:  每筆倉位 notional = equity × position_size_pct（簡單比例）
+  #   risk: 每筆倉位以「撞到 stop 時固定虧損 risk_per_trade_usdt」反推 quantity，
+  #         qty = R / [|entry−stop| + (entry+stop)×taker]（含雙向手續費；
+  #         滑點已內含於 entry_price，不重複計）。
+  #         若 R 過小導致 notional > equity → 視為過槓桿，拒絕該筆訂單
+  sizing_mode: pct                # pct | risk
+  position_size_pct: 0.60         # sizing_mode=pct 時生效
+  risk_per_trade_usdt: 1.0        # sizing_mode=risk 時生效（每筆 stop-out 的固定虧損）
 
 fees:
   taker_fee_rate: 0.0005    # 0.05%
