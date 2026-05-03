@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WMA Backtest Viewer</title>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: #0a0a0a; color: #e5e5e5;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang TC",
+                   "Hiragino Sans GB", sans-serif;
+    }
+    #app {
+      display: flex; flex-direction: column; height: 100vh;
+    }
+    #header {
+      flex: 0 0 auto;
+      padding: 10px 18px;
+      background: #141414;
+      border-bottom: 1px solid #262626;
+      display: flex; gap: 24px; align-items: center;
+      flex-wrap: wrap;
+    }
+    #title {
+      font-size: 15px; font-weight: 600; color: #fafafa;
+      letter-spacing: 0.5px;
+    }
+    .metric-group {
+      display: flex; gap: 14px; font-size: 12px;
+    }
+    .metric-pill {
+      display: flex; gap: 6px; align-items: baseline;
+      padding: 4px 10px;
+      background: #1f1f1f;
+      border-radius: 4px;
+      border: 1px solid #2a2a2a;
+    }
+    .metric-pill .label { color: #888; }
+    .metric-pill .value { color: #fafafa; font-weight: 500; }
+    .metric-pill .value.pos { color: #16a34a; }
+    .metric-pill .value.neg { color: #dc2626; }
+    #charts {
+      flex: 1 1 auto;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .chart-panel {
+      position: relative;
+      border-bottom: 1px solid #1a1a1a;
+      flex: 0 0 auto;
+    }
+    .chart-panel:last-child { border-bottom: 0; }
+    .panel-label {
+      position: absolute;
+      top: 6px; left: 12px;
+      z-index: 5;
+      font-size: 10px;
+      color: #aaa;
+      background: rgba(20, 20, 20, 0.85);
+      padding: 2px 8px;
+      border-radius: 3px;
+      pointer-events: none;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+    .chart-canvas { width: 100%; height: 100%; }
+    #loading {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: #0a0a0a; z-index: 100;
+      font-size: 14px; color: #888;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="header">
+      <div id="title">Loading...</div>
+      <div class="metric-group" id="metrics-row"></div>
+    </div>
+    <div id="charts"><div id="loading">載入中...</div></div>
+  </div>
+
+  <script>
+  (async () => {
+    const { createChart, LineStyle, ColorType, CrosshairMode, PriceScaleMode } = LightweightCharts;
+
+    // ----- 取資料 -----
+    let data;
+    try {
+      const resp = await fetch('/api/data');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      data = await resp.json();
+    } catch (err) {
+      document.getElementById('loading').textContent = '載入失敗：' + err.message;
+      return;
+    }
+
+    // ----- Header -----
+    document.getElementById('title').textContent =
+      `${data.metadata.symbol} · ${data.metadata.timeframe} · ${data.metadata.sample.toUpperCase()}`;
+
+    const fmtPct = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+    const metricsRow = document.getElementById('metrics-row');
+    const groups = [
+      ['Combined', data.metadata.combined_metrics],
+      ['Long',     data.metadata.long_metrics],
+      ['Short',    data.metadata.short_metrics],
+    ];
+    groups.forEach(([label, m]) => {
+      const cls = m.total_return_pct >= 0 ? 'pos' : 'neg';
+      const pill = document.createElement('div');
+      pill.className = 'metric-pill';
+      pill.innerHTML = `
+        <span class="label">${label}</span>
+        <span class="value ${cls}">${fmtPct(m.total_return_pct)}</span>
+        <span class="label">PF</span><span class="value">${m.profit_factor.toFixed(2)}</span>
+        <span class="label">MDD</span><span class="value">${m.max_drawdown_pct.toFixed(1)}%</span>
+        <span class="label">WR</span><span class="value">${m.win_rate_pct.toFixed(0)}%</span>
+        <span class="label">N</span><span class="value">${m.total_trades}</span>
+      `;
+      metricsRow.appendChild(pill);
+    });
+
+    // ----- 計算各區塊高度 -----
+    document.getElementById('loading').remove();
+    const chartsHost = document.getElementById('charts');
+    const totalHeight = chartsHost.clientHeight;
+
+    // 主圖固定 60%；equity 固定 25%；其餘 panels 共享 15%（依各自 height_ratio）
+    const mainRatio = 0.60;
+    const equityRatio = 0.25;
+    const panelTotalRatio = 1 - mainRatio - equityRatio;
+    const panelRatioSum = data.panels.reduce((s, p) => s + p.height_ratio, 0) || 1;
+
+    const heightFor = {
+      main: Math.floor(totalHeight * mainRatio),
+      panel: (p) => Math.floor(totalHeight * panelTotalRatio * (p.height_ratio / panelRatioSum)),
+      equity: Math.floor(totalHeight * equityRatio),
+    };
+
+    // ----- 共同圖表選項 -----
+    const baseOptions = (height) => ({
+      width: chartsHost.clientWidth,
+      height,
+      layout: {
+        background: { type: ColorType.Solid, color: '#0a0a0a' },
+        textColor: '#cccccc',
+        fontSize: 11,
+      },
+      grid: {
+        vertLines: { color: '#1a1a1a' },
+        horzLines: { color: '#1a1a1a' },
+      },
+      rightPriceScale: { borderColor: '#2a2a2a' },
+      timeScale: {
+        borderColor: '#2a2a2a',
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      crosshair: { mode: CrosshairMode.Normal },
+    });
+
+    const lineStyleMap = {
+      solid: LineStyle.Solid,
+      dashed: LineStyle.Dashed,
+      dotted: LineStyle.Dotted,
+    };
+
+    const allCharts = [];   // 給時間軸同步用
+
+    function makePanel(label, height) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'chart-panel';
+      wrapper.style.height = height + 'px';
+      const tag = document.createElement('div');
+      tag.className = 'panel-label';
+      tag.textContent = label;
+      wrapper.appendChild(tag);
+      const canvas = document.createElement('div');
+      canvas.className = 'chart-canvas';
+      wrapper.appendChild(canvas);
+      chartsHost.appendChild(wrapper);
+      return canvas;
+    }
+
+    // ===========================================================
+    // 主圖：candlestick + overlays + markers
+    // ===========================================================
+    const mainCanvas = makePanel('Price', heightFor.main);
+    const mainChart = createChart(mainCanvas, baseOptions(heightFor.main));
+    allCharts.push(mainChart);
+
+    const candle = mainChart.addCandlestickSeries({
+      upColor: '#26a69a', downColor: '#ef5350',
+      borderVisible: false,
+      wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    });
+    candle.setData(data.ohlc);
+
+    // overlays（BB / WMA）
+    data.main_overlays.forEach(s => {
+      const series = mainChart.addLineSeries({
+        color: s.color,
+        lineWidth: s.line_width,
+        lineStyle: lineStyleMap[s.line_style] ?? LineStyle.Solid,
+        title: s.title,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      series.setData(s.data);
+    });
+
+    // markers：long / short 的進出場
+    const markers = [];
+    data.trades.long.forEach(t => {
+      markers.push({
+        time: t.entry_time,
+        position: 'belowBar',
+        color: '#2563eb',
+        shape: 'arrowUp',
+        text: `L ${t.entry_price.toFixed(2)}`,
+      });
+      markers.push({
+        time: t.exit_time,
+        position: 'aboveBar',
+        color: t.net_pnl >= 0 ? '#16a34a' : '#dc2626',
+        shape: 'arrowDown',
+        text: `${t.return_pct >= 0 ? '+' : ''}${t.return_pct.toFixed(1)}%`,
+      });
+    });
+    data.trades.short.forEach(t => {
+      markers.push({
+        time: t.entry_time,
+        position: 'aboveBar',
+        color: '#ea580c',
+        shape: 'arrowDown',
+        text: `S ${t.entry_price.toFixed(2)}`,
+      });
+      markers.push({
+        time: t.exit_time,
+        position: 'belowBar',
+        color: t.net_pnl >= 0 ? '#16a34a' : '#dc2626',
+        shape: 'arrowUp',
+        text: `${t.return_pct >= 0 ? '+' : ''}${t.return_pct.toFixed(1)}%`,
+      });
+    });
+    markers.sort((a, b) => a.time - b.time);
+    candle.setMarkers(markers);
+
+    // ===========================================================
+    // 各副面板
+    // ===========================================================
+    data.panels.forEach(panel => {
+      const h = heightFor.panel(panel);
+      const canvas = makePanel(panel.title, h);
+      const chart = createChart(canvas, baseOptions(h));
+      allCharts.push(chart);
+
+      // 把 ref series 拿來附水平線（橫線需綁在某個 series 上）
+      let refSeries = null;
+      panel.series.forEach((s, i) => {
+        let series;
+        if (s.type === 'histogram') {
+          series = chart.addHistogramSeries({
+            color: s.color, title: s.title,
+            priceFormat: { type: 'volume' },
+            priceLineVisible: false,
+          });
+        } else if (s.type === 'area') {
+          series = chart.addAreaSeries({
+            topColor: s.color + '33',
+            bottomColor: s.color + '00',
+            lineColor: s.color, title: s.title,
+          });
+        } else {
+          series = chart.addLineSeries({
+            color: s.color,
+            lineWidth: s.line_width,
+            lineStyle: lineStyleMap[s.line_style] ?? LineStyle.Solid,
+            title: s.title,
+            priceLineVisible: false,
+            lastValueVisible: i === 0,
+          });
+        }
+        series.setData(s.data);
+        if (i === 0) refSeries = series;
+      });
+
+      panel.horizontal_lines.forEach(line => {
+        if (refSeries) {
+          refSeries.createPriceLine({
+            price: line.value,
+            color: line.color,
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: line.label !== '',
+            title: line.label,
+          });
+        }
+      });
+    });
+
+    // ===========================================================
+    // Equity panel（在最底）
+    // ===========================================================
+    const equityCanvas = makePanel('Equity (USDT)', heightFor.equity);
+    const equityChart = createChart(equityCanvas, baseOptions(heightFor.equity));
+    allCharts.push(equityChart);
+    const eqLong = equityChart.addLineSeries({
+      color: '#2563eb', lineWidth: 1, title: 'Long', priceLineVisible: false,
+    });
+    eqLong.setData(data.equity.long);
+    const eqShort = equityChart.addLineSeries({
+      color: '#ea580c', lineWidth: 1, title: 'Short', priceLineVisible: false,
+    });
+    eqShort.setData(data.equity.short);
+    const eqComb = equityChart.addLineSeries({
+      color: '#a855f7', lineWidth: 2, title: 'Combined', priceLineVisible: false,
+    });
+    eqComb.setData(data.equity.combined);
+
+    // ===========================================================
+    // 時間軸同步（依 visible time range，避免 logical range 因不同
+    // 資料長度而失準）
+    // ===========================================================
+    let syncing = false;  // 防無限遞迴
+    allCharts.forEach((chart, idx) => {
+      chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+        if (syncing || !range) return;
+        syncing = true;
+        try {
+          allCharts.forEach((other, j) => {
+            if (j !== idx) {
+              other.timeScale().setVisibleRange(range);
+            }
+          });
+        } finally {
+          syncing = false;
+        }
+      });
+    });
+
+    // 初始 fit
+    mainChart.timeScale().fitContent();
+
+    // 視窗 resize 處理
+    window.addEventListener('resize', () => {
+      const w = chartsHost.clientWidth;
+      allCharts.forEach(c => c.applyOptions({ width: w }));
+    });
+
+  })();
+  </script>
+</body>
+</html>
