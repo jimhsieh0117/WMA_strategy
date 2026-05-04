@@ -1,4 +1,8 @@
-"""viewer.server 的序列化邏輯（持倉連線 / 止損軌道）測試。"""
+"""viewer.server 的序列化邏輯（持倉連線 / 止損軌道）測試。
+
+新 schema：每筆交易一個 segment（list of points），不再用 single-series +
+whitespace 的方式。Frontend 為每個 segment 建立獨立 LineSeries。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ import pandas as pd
 
 from src.broker.types import Trade
 from src.utils.types import Direction
-from src.viewer.server import _holding_line_data, _stop_track_data
+from src.viewer.server import _holding_segments, _stop_track_segments
 
 
 def _trade(
@@ -37,75 +41,90 @@ def _trade(
 
 
 # --------------------------------------------------------------------------- #
-# 持倉連線（whitespace 應放在 last_exit + 1）
+# 持倉連線：每筆交易一個 segment
 # --------------------------------------------------------------------------- #
 
-class TestHoldingLineData:
-    def test_two_trades_have_whitespace_right_after_exit(self) -> None:
-        # trade1: 100~200; 等待; trade2: 1000~1100
+class TestHoldingSegments:
+    def test_each_trade_is_isolated_segment(self) -> None:
         t1 = _trade(entry_t=100, exit_t=200, entry_price=10, exit_price=20, net_pnl=10)
         t2 = _trade(entry_t=1000, exit_t=1100, entry_price=11, exit_price=21, net_pnl=10)
-        out = _holding_line_data([t1, t2], win=True)
+        out = _holding_segments([t1, t2], win=True)
 
-        # 預期：[entry1, exit1, ws@201, entry2, exit2, ws@1101 (final)]
-        assert out[0] == {"time": 100, "value": 10.0}
-        assert out[1] == {"time": 200, "value": 20.0}
-        assert out[2] == {"time": 201}                # whitespace 在 exit + 1
-        assert out[3] == {"time": 1000, "value": 11.0}
-        assert out[4] == {"time": 1100, "value": 21.0}
-        # 結尾 whitespace 防止延伸到右邊
-        assert out[5] == {"time": 1101}
+        # 兩個獨立 segments，每個 segment 兩個點
+        assert len(out) == 2
+        assert out[0] == [
+            {"time": 100, "value": 10.0},
+            {"time": 200, "value": 20.0},
+        ]
+        assert out[1] == [
+            {"time": 1000, "value": 11.0},
+            {"time": 1100, "value": 21.0},
+        ]
 
     def test_filter_by_win(self) -> None:
         win = _trade(entry_t=100, exit_t=200, net_pnl=5.0)
         loss = _trade(entry_t=300, exit_t=400, net_pnl=-3.0)
-        wins_out = _holding_line_data([win, loss], win=True)
-        losses_out = _holding_line_data([win, loss], win=False)
-        # win 那邊只有一筆 trade（兩個資料點 + 結尾 ws）
-        assert sum(1 for p in wins_out if "value" in p) == 2
-        assert sum(1 for p in losses_out if "value" in p) == 2
+        wins_out = _holding_segments([win, loss], win=True)
+        losses_out = _holding_segments([win, loss], win=False)
+        assert len(wins_out) == 1
+        assert len(losses_out) == 1
+
+    def test_skip_degenerate_zero_duration(self) -> None:
+        # exit == entry → skip
+        t = _trade(entry_t=100, exit_t=100, net_pnl=1.0)
+        assert _holding_segments([t], win=True) == []
 
     def test_empty_input(self) -> None:
-        assert _holding_line_data([], win=True) == []
+        assert _holding_segments([], win=True) == []
 
 
 # --------------------------------------------------------------------------- #
-# 止損軌道
+# 止損軌道：手動編碼階梯點
 # --------------------------------------------------------------------------- #
 
-class TestStopTrackData:
-    def test_whitespace_after_exit_not_before_next_entry(self) -> None:
+class TestStopTrackSegments:
+    def test_manual_step_encoding(self) -> None:
         sh = (
             (pd.Timestamp(100, unit="s"), 95.0),
             (pd.Timestamp(150, unit="s"), 97.0),
         )
-        t1 = _trade(entry_t=100, exit_t=200, stop_history=sh)
-        t2 = _trade(
-            entry_t=1000, exit_t=1100,
-            stop_history=((pd.Timestamp(1000, unit="s"), 105.0),),
-        )
-        out = _stop_track_data([t1, t2])
+        t = _trade(entry_t=100, exit_t=200, stop_history=sh)
+        out = _stop_track_segments([t])
 
-        # 找到第一個 whitespace 的位置 — 應緊貼 trade1 exit (=200)，而非 trade2 entry-1
-        ws_times = [p["time"] for p in out if "value" not in p]
-        assert ws_times[0] == 201, f"expected whitespace at 201, got {ws_times[0]}"
-        # 結尾還會有一個 ws
-        assert ws_times[-1] == 1101
+        assert len(out) == 1  # 一個 segment
+        seg = out[0]
+        # 預期：(100,95), (149,95) 延伸, (150,97), (199,97) 延伸, (200,97) 出場延伸
+        assert seg == [
+            {"time": 100, "value": 95.0},
+            {"time": 149, "value": 95.0},
+            {"time": 150, "value": 97.0},
+            {"time": 199, "value": 97.0},
+            {"time": 200, "value": 97.0},
+        ]
 
-    def test_stop_track_extends_to_exit_with_last_value(self) -> None:
-        sh = (
-            (pd.Timestamp(100, unit="s"), 95.0),
-            (pd.Timestamp(150, unit="s"), 97.0),
-        )
-        t1 = _trade(entry_t=100, exit_t=200, stop_history=sh)
-        out = _stop_track_data([t1])
-        valid = [p for p in out if "value" in p]
-        # 階梯點 + (exit_t, last_stop) 延伸點
-        assert valid[0] == {"time": 100, "value": 95.0}
-        assert valid[1] == {"time": 150, "value": 97.0}
-        assert valid[2] == {"time": 200, "value": 97.0}  # 延伸到 exit
+    def test_each_trade_is_isolated_segment(self) -> None:
+        sh1 = ((pd.Timestamp(100, unit="s"), 95.0),)
+        sh2 = ((pd.Timestamp(1000, unit="s"), 105.0),)
+        t1 = _trade(entry_t=100, exit_t=200, stop_history=sh1)
+        t2 = _trade(entry_t=1000, exit_t=1100, stop_history=sh2)
+        out = _stop_track_segments([t1, t2])
 
-    def test_no_stop_history_skipped(self) -> None:
+        # 兩個獨立 segments，第二個 segment 不會與第一個共用任何點
+        assert len(out) == 2
+        # 第一個 segment 結束於 (200, 95)
+        assert out[0][-1] == {"time": 200, "value": 95.0}
+        # 第二個 segment 從 (1000, 105) 開始
+        assert out[1][0] == {"time": 1000, "value": 105.0}
+
+    def test_no_history_skipped(self) -> None:
         t = _trade(entry_t=100, exit_t=200, stop_history=())
-        out = _stop_track_data([t])
-        assert out == []
+        assert _stop_track_segments([t]) == []
+
+    def test_extends_to_exit(self) -> None:
+        sh = ((pd.Timestamp(100, unit="s"), 95.0),)  # 只有初始 stop
+        t = _trade(entry_t=100, exit_t=200, stop_history=sh)
+        out = _stop_track_segments([t])
+        seg = out[0]
+        # 應有 (100,95) + 延伸點 (199,95) + 出場 (200,95)
+        assert seg[0] == {"time": 100, "value": 95.0}
+        assert seg[-1] == {"time": 200, "value": 95.0}

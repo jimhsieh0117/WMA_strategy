@@ -84,91 +84,67 @@ def _trade_records(trades: list[Trade]) -> list[dict]:
 # Trade-derived overlays（持倉連線 + 止損軌道）
 # --------------------------------------------------------------------------- #
 
-def _holding_line_data(trades: list[Trade], *, win: bool) -> list[dict]:
-    """為主圖建立「持倉連線」series：每筆交易兩個點（entry → exit），
-    交易之間以 whitespace（無 value 的 point）斷開。
+def _holding_segments(
+    trades: list[Trade], *, win: bool
+) -> list[list[dict]]:
+    """每筆交易一個 segment：``[entry_point, exit_point]``。
 
-    Whitespace **一定要放在剛平倉後**（``last_exit + 1``），而不是下次進場前。
-    若放在下次進場前，LWC 在 LineType.WithSteps 模式下會把上一筆 exit 的
-    橫向 step 延伸到 whitespace 處（橫跨整個無持倉時段）；放在 exit+1 則
-    extension 寬度只剩 1 秒、視覺上不可見。Solid line type 雖無此延伸問題，
-    但同樣放在 exit+1 較安全並一致。
-
-    series 結尾另追加一個 whitespace，避免最後一筆持倉的 step / line 被
-    延伸到圖表右側邊緣。
+    回傳的是 list-of-segments，frontend 為每個 segment 建立獨立 LineSeries，
+    從根本上避免「跨 trade 連線」的 LWC v4 行為（whitespace + WithSteps 無法
+    可靠斷開等待期間的線）。
     """
-    selected = sorted(
-        (t for t in trades if (t.net_pnl > 0) == win),
-        key=lambda t: t.entry_timestamp,
-    )
-    out: list[dict] = []
-    last_time = -1
-    for t in selected:
+    segments: list[list[dict]] = []
+    for t in sorted(trades, key=lambda x: x.entry_timestamp):
+        if (t.net_pnl > 0) != win:
+            continue
         et = _to_unix_seconds(t.entry_timestamp)
         xt = _to_unix_seconds(t.exit_timestamp)
-        if et <= last_time:
-            continue
         if xt <= et:
             continue
-        # whitespace 放在「上一筆 exit 之後 1 秒」斷開上一筆
-        if out:
-            ws = last_time + 1
-            if ws < et:
-                out.append({"time": ws})
-            else:
-                # 緊鄰 → 略過本筆，避免時序衝突
-                continue
-        out.append({"time": et, "value": float(t.entry_price)})
-        out.append({"time": xt, "value": float(t.exit_price)})
-        last_time = xt
-    # 結尾再放一個 whitespace，避免延伸到右邊
-    if out:
-        out.append({"time": last_time + 1})
-    return out
+        segments.append([
+            {"time": et, "value": float(t.entry_price)},
+            {"time": xt, "value": float(t.exit_price)},
+        ])
+    return segments
 
 
-def _stop_track_data(trades: list[Trade]) -> list[dict]:
-    """每筆交易的 stop 軌道：依 stop_history 取點，最後追加 (exit_ts, last_stop)
-    讓階梯線延伸到出場；交易間以 whitespace 斷開。
+def _stop_track_segments(trades: list[Trade]) -> list[list[dict]]:
+    """每筆交易一個 segment 的階梯軌跡。
 
-    Whitespace 規則同 ``_holding_line_data``：放在 ``last_exit + 1``（不是
-    next_entry - 1），避免 ``LineType.WithSteps`` 把橫向 step 延伸到下根 K
-    （亦即「沒持倉時也看到 stop 線」）。
+    用「**手動編碼階梯點**」取代 LWC 的 ``LineType.WithSteps``：
+    每次 stop 變化前 1 秒插入前一個 stop 值的延伸點，再用 Solid line
+    連起來，視覺上等於直角階梯，但完全不依賴 LWC 不可靠的階梯渲染。
+
+    範例：history=[(t=100,95),(t=150,97)], exit=200 →
+        [(100,95), (149,95), (150,97), (199,97), (200,97)]
+        ↑      ↑99秒橫線↑斜1秒↑99秒橫線↑斜1秒↑
     """
-    out: list[dict] = []
-    last_time = -1
+    segments: list[list[dict]] = []
     for t in sorted(trades, key=lambda x: x.entry_timestamp):
         if not t.stop_history:
             continue
-        # 完整序列 = stop_history + (exit_ts, last_stop)
         history = list(t.stop_history)
         last_stop = history[-1][1]
+        # 加上 (exit_ts, last_stop) 讓階梯延伸到出場
         history.append((t.exit_timestamp, last_stop))
 
         seg: list[dict] = []
-        seg_last = last_time
+        prev_t = -1
+        prev_v: float | None = None
         for ts, stop in history:
             ut = _to_unix_seconds(ts)
-            if ut <= seg_last:
-                continue
+            if ut <= prev_t:
+                continue  # 略過時序倒退或重複
+            # 插入「前 1 秒 + 前一值」做手動階梯
+            if prev_v is not None and ut > prev_t + 1:
+                seg.append({"time": ut - 1, "value": float(prev_v)})
             seg.append({"time": ut, "value": float(stop)})
-            seg_last = ut
+            prev_t = ut
+            prev_v = float(stop)
 
-        if not seg:
-            continue
-        # 把 whitespace 放在「上一筆 exit 之後 1 秒」
-        if out:
-            ws = last_time + 1
-            if ws < seg[0]["time"]:
-                out.append({"time": ws})
-            else:
-                continue  # 緊鄰
-        out.extend(seg)
-        last_time = seg[-1]["time"]
-    # 結尾 whitespace，避免最後一筆 stop 階梯延伸到右邊
-    if out:
-        out.append({"time": last_time + 1})
-    return out
+        if seg:
+            segments.append(seg)
+    return segments
 
 
 def _metrics_summary(m: MetricsReport) -> dict:
@@ -252,14 +228,15 @@ def build_app(
             "short": _trade_records(short_result.trades),
         },
         "trade_lines": {
-            "holding_wins": _holding_line_data(
+            # 每個 key 是 list-of-segments：每筆交易一個 segment（一個 LineSeries）
+            "holding_wins": _holding_segments(
                 long_result.trades + short_result.trades, win=True,
             ),
-            "holding_losses": _holding_line_data(
+            "holding_losses": _holding_segments(
                 long_result.trades + short_result.trades, win=False,
             ),
-            "long_stops": _stop_track_data(long_result.trades),
-            "short_stops": _stop_track_data(short_result.trades),
+            "long_stops": _stop_track_segments(long_result.trades),
+            "short_stops": _stop_track_segments(short_result.trades),
         },
         "equity": {
             "long": _line_records(long_result.equity_curve),
