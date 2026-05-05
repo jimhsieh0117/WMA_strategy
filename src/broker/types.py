@@ -117,6 +117,7 @@ class FillResult:
     fill_price: float | None = None
     fee: float = 0.0
     reason: str = ""
+    position_id: int | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -139,6 +140,7 @@ class Position:
     stop_price: float
     entry_fee: float
     stop_history: list[tuple[pd.Timestamp, float]] = field(default_factory=list)
+    position_id: int = 0
 
     @property
     def notional_at_entry(self) -> float:
@@ -174,6 +176,7 @@ class Trade:
     return_pct: float
     exit_reason: str
     stop_history: tuple[tuple[pd.Timestamp, float], ...] = ()
+    position_id: int = 0
 
     @property
     def holding_duration(self) -> pd.Timedelta:

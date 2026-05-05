@@ -7,18 +7,20 @@ ARCHITECTURE.md §3.5 + §7 + §11。
 
     1. 撮合 pending limit 單（在 bar[i].open 撮合）
        - limit_price = bar.open ± slippage_pct
-       - quantity = (account.equity × position_size_pct) / limit_price
-       - 成功 → 開倉 + 立即 instantiate TrailingStopController
+       - quantity 由 sizing_mode 決定
+       - allow_pyramiding=True 時走多倉路徑（open_position_multi）
+       - 成功 → 開倉 + 立即 instantiate TrailingStopController（存到 trailings[pid]）
        - 失敗 → 訊號作廢
 
-    2. 盤中止損檢查（broker.check_stop 用 bar.high/low）
-       - 帶倉跨 bar 且 bar.open 已穿越 stop → 跳空於 bar.open
-       - 同根進場：不適用跳空規則
-       - 觸發 → 平倉 + 廢棄 controller
+    2. 盤中止損檢查：
+       - 單倉模式：broker.check_stop
+       - 多倉模式：broker.check_stops（遍歷所有 position）
+       - 觸發 → 平倉 + 移除對應 controller
 
     3. 收盤後策略動作：
-       3a. 若有持倉 → controller.update(...) 取得新 stop（三階段狀態機 + ratchet）
-       3b. 若無持倉且無 pending → strategy.detect_entry → pending_signal
+       3a. 對每筆持倉：controller.update(...) 取得新 stop（三階段狀態機 + ratchet）
+       3b. allow_pyramiding=False 且已有持倉 → 不偵測新訊號
+           其餘情況 → strategy.detect_entry → pending_signal（每根 K 最多 1 個 pending）
 
     4. 紀錄 equity（mark = bar.close）
 """
@@ -60,7 +62,7 @@ def run_backtest(
         strategy: 已綁定 params 的策略實例。
         account: 帳戶實例（caller 提供，方便外部觀察 trade_log）。
         broker: 撮合器（持有 fee / slippage 設定）。
-        config: 引擎設定。預設 ``EngineConfig()`` 即倉位 60%。
+        config: 引擎設定。預設 ``EngineConfig()`` 即倉位 60%、單倉模式。
         show_progress: 是否顯示 tqdm 進度條。
     """
     config = config or EngineConfig()
@@ -72,7 +74,8 @@ def run_backtest(
         raise ValueError("empty dataframe")
 
     pending_signal = None
-    trailing: TrailingStopController | None = None
+    # 每筆持倉一個 controller，key = position_id
+    trailings: dict[int, TrailingStopController] = {}
 
     signals_emitted = 0
     signals_filled = 0
@@ -98,13 +101,14 @@ def run_backtest(
             )
             equity_now = account.equity(bar.open)
             if equity_now > 0 and limit_price > 0:
-                quantity, target_risk, sizing_ok = _compute_quantity(
+                quantity, target_risk, sizing_ok, sizing_reason = _compute_quantity(
                     config=config,
                     direction=pending_signal.direction,
                     limit_price=limit_price,
                     initial_stop=pending_signal.initial_stop,
                     equity_now=equity_now,
                     taker_fee_rate=broker.config.taker_fee_rate,
+                    existing_notional=account.total_notional_at_entry,
                 )
 
                 stop_ok = _stop_on_correct_side(
@@ -119,7 +123,10 @@ def run_backtest(
                         target_risk_usdt=target_risk,
                     )
                     try:
-                        result = broker.try_fill_limit(order, bar, account)
+                        result = broker.try_fill_limit(
+                            order, bar, account,
+                            allow_multi=config.allow_pyramiding,
+                        )
                     except OrderExecutionError:
                         logger.exception(
                             "fill failed at %s for %s", ts, pending_signal.direction
@@ -127,18 +134,21 @@ def run_backtest(
                         raise
                     if result.filled:
                         signals_filled += 1
-                        # 立刻 instantiate 拖曳止損 controller
-                        trailing = TrailingStopController(
-                            position=account.position,
+                        pid = result.position_id
+                        assert pid is not None
+                        new_pos = account.position_by_id(pid)
+                        controller = TrailingStopController(
+                            position=new_pos,
                             params=trailing_params,
                             broker_config=broker.config,
                         )
+                        trailings[pid] = controller
                         logger.debug(
-                            "FILLED %s @ %.4f qty=%.6f stop=%.4f R=%.6f abnormal_R=%s",
+                            "FILLED %s @ %.4f qty=%.6f stop=%.4f R=%.6f abnormal_R=%s pid=%d",
                             pending_signal.direction,
                             result.fill_price, quantity,
                             pending_signal.initial_stop,
-                            trailing.R, trailing.is_abnormal_r,
+                            controller.R, controller.is_abnormal_r, pid,
                         )
                     else:
                         signals_unfilled += 1
@@ -147,9 +157,9 @@ def run_backtest(
                     signals_unfilled += 1
                     if not sizing_ok:
                         logger.debug(
-                            "SKIP_FILL %s: sizing rejected (mode=%s, "
+                            "SKIP_FILL %s: sizing rejected (%s, mode=%s, "
                             "limit=%.4f stop=%.4f equity=%.4f)",
-                            pending_signal.direction, config.sizing_mode,
+                            pending_signal.direction, sizing_reason, config.sizing_mode,
                             limit_price, pending_signal.initial_stop, equity_now,
                         )
                     else:
@@ -163,32 +173,40 @@ def run_backtest(
                 signals_unfilled += 1
             pending_signal = None
 
-        # === Step 2: 盤中止損檢查 ===
+        # === Step 2: 盤中止損檢查（多倉一次處理所有持倉）===
         if account.has_position():
-            trade = broker.check_stop(account, bar)
-            if trade is not None:
+            closed_trades = broker.check_stops(account, bar)
+            for trade in closed_trades:
                 logger.debug(
-                    "STOP %s @ %.4f net_pnl=%.4f reason=%s",
-                    trade.direction, trade.exit_price, trade.net_pnl, trade.exit_reason,
+                    "STOP %s @ %.4f net_pnl=%.4f reason=%s pid=%d",
+                    trade.direction, trade.exit_price, trade.net_pnl,
+                    trade.exit_reason, trade.position_id,
                 )
-                trailing = None  # 持倉結束 → 廢棄 controller
+                trailings.pop(trade.position_id, None)
 
-        # === Step 3a: 收盤 ratchet 拖曳止損 ===
-        if account.has_position() and trailing is not None:
-            new_stop = trailing.update(
+        # === Step 3a: 收盤 ratchet 拖曳止損（每筆獨立）===
+        for pid, pos in account.positions.items():
+            controller = trailings.get(pid)
+            if controller is None:
+                continue
+            new_stop = controller.update(
                 bar=bar, df=df, bar_index=i,
-                current_stop=account.position.stop_price,
+                current_stop=pos.stop_price,
             )
             if new_stop is not None:
-                old_stop = account.position.stop_price
-                account.update_stop(new_stop, timestamp=ts)
+                old_stop = pos.stop_price
+                account.update_stop_by_id(pid, new_stop, timestamp=ts)
                 logger.debug(
-                    "RATCHET %s stop %.4f -> %.4f (stage=%d)",
-                    account.position.direction, old_stop, new_stop, trailing.stage,
+                    "RATCHET %s pid=%d stop %.4f -> %.4f (stage=%d)",
+                    pos.direction, pid, old_stop, new_stop, controller.stage,
                 )
 
         # === Step 3b: 收盤偵測進場訊號 ===
-        if not account.has_position():
+        # 進場閘門：
+        # - allow_pyramiding=False：維持舊版「無持倉才偵測」
+        # - allow_pyramiding=True：每根 K 都偵測（pending 機制保證 1 K = 1 新倉）
+        can_detect = config.allow_pyramiding or not account.has_position()
+        if can_detect:
             new_signal = strategy.detect_entry(df, i)
             if new_signal is not None:
                 signals_emitted += 1
@@ -207,17 +225,17 @@ def run_backtest(
 
     if account.has_position() and config.force_close_at_end:
         last_bar = Bar.from_row(df.index[-1], df.iloc[-1])
-        pos = account.position
-        assert pos is not None
-        notional = pos.quantity * last_bar.close
-        fee = notional * broker.config.taker_fee_rate
-        account.close_position(
-            exit_price=last_bar.close,
-            exit_timestamp=last_bar.timestamp,
-            fee=fee,
-            reason="FORCE_CLOSE_END",
-        )
-        trailing = None
+        for pid, pos in list(account.positions.items()):
+            notional = pos.quantity * last_bar.close
+            fee = notional * broker.config.taker_fee_rate
+            account.close_position_by_id(
+                position_id=pid,
+                exit_price=last_bar.close,
+                exit_timestamp=last_bar.timestamp,
+                fee=fee,
+                reason="FORCE_CLOSE_END",
+            )
+            trailings.pop(pid, None)
 
     final_equity = account.equity(float(df.iloc[-1]["close"]))
     equity_curve = pd.Series(
@@ -239,7 +257,11 @@ def run_backtest(
         signals_unfilled=signals_unfilled,
         signals_skipped_pending=signals_skipped_pending,
         config_snapshot={
+            "sizing_mode": config.sizing_mode,
             "position_size_pct": config.position_size_pct,
+            "risk_per_trade_usdt": config.risk_per_trade_usdt,
+            "allow_pyramiding": config.allow_pyramiding,
+            "leverage_cap": config.leverage_cap,
             "force_close_at_end": config.force_close_at_end,
             "skip_signal_when_pending": config.skip_signal_when_pending,
             "taker_fee_rate": broker.config.taker_fee_rate,
@@ -279,27 +301,51 @@ def _compute_quantity(
     initial_stop: float,
     equity_now: float,
     taker_fee_rate: float,
-) -> tuple[float, float | None, bool]:
-    """依 ``sizing_mode`` 計算下單 quantity。
+    existing_notional: float = 0.0,
+) -> tuple[float, float | None, bool, str]:
+    """依 ``sizing_mode`` 計算下單 quantity，並做槓桿上限檢查。
+
+    多倉模式下：
+        Σ open_notional + new_notional ≤ equity_now × leverage_cap
+    違反則拒絕該筆進場（fail-fast，不嘗試降低倉位硬擠進去）。
 
     Returns:
-        (quantity, target_risk_usdt | None, sizing_ok)
-        - sizing_ok=False 代表此筆訂單應被拒絕（如 risk 模式下過度槓桿）
+        (quantity, target_risk_usdt | None, sizing_ok, reason)
     """
     if config.sizing_mode == "pct":
-        quantity = (equity_now * config.position_size_pct) / limit_price
-        return quantity, None, True
+        # pct 模式：以「剩餘可用 equity」乘上比例計算 notional，避免在多倉模式下
+        # 反覆以同樣 60% 開倉導致 Σnotional 失控
+        if config.allow_pyramiding:
+            cap_total = equity_now * config.leverage_cap
+            available = cap_total - existing_notional
+            if available <= 0:
+                return 0.0, None, False, "leverage_cap_exhausted"
+            target_notional = min(available, equity_now * config.position_size_pct)
+        else:
+            target_notional = equity_now * config.position_size_pct
+        quantity = target_notional / limit_price
+        return quantity, None, True, "ok"
 
     # risk 模式：qty = R / [|limit-stop| + (limit+stop)×taker]
     denom = abs(limit_price - initial_stop) + (limit_price + initial_stop) * taker_fee_rate
     if denom <= 0:
-        return 0.0, None, False
+        return 0.0, None, False, "denom_non_positive"
     quantity = config.risk_per_trade_usdt / denom
     notional = quantity * limit_price
+
+    if config.allow_pyramiding:
+        cap_total = equity_now * config.leverage_cap
+        if existing_notional + notional > cap_total:
+            return 0.0, None, False, (
+                f"leverage_cap_exceeded (existing={existing_notional:.2f}, "
+                f"new={notional:.2f}, cap={cap_total:.2f})"
+            )
+        return quantity, config.risk_per_trade_usdt, True, "ok"
+
+    # 單倉模式維持舊行為：notional > equity 視為過槓桿
     if notional > equity_now:
-        # 過槓桿 → 拒絕進場（CLAUDE.md §5 fail-fast 同精神：寧可不交易）
-        return 0.0, None, False
-    return quantity, config.risk_per_trade_usdt, True
+        return 0.0, None, False, "single_position_overleveraged"
+    return quantity, config.risk_per_trade_usdt, True, "ok"
 
 
 def _serialize_params(params) -> dict:

@@ -1,8 +1,9 @@
 """撮合與止損模擬。
 
-對 engine 暴露兩個操作：
-1. ``try_fill_limit(order, bar, account)``：嘗試在當根 K 線撮合限價單
-2. ``check_stop(account, bar)``：檢查當根 K 線是否觸發止損，若是則平倉
+對 engine 暴露三個操作：
+1. ``try_fill_limit(order, bar, account, *, allow_multi=False)``：嘗試在當根 K 線撮合限價單
+2. ``check_stop(account, bar)``：單倉舊 API（持倉 ≤ 1 時用）
+3. ``check_stops(account, bar) -> list[Trade]``：多倉新 API，遍歷所有持倉
 
 設計原則：
 - 純粹的撮合 / 止損規則模擬，不知道策略邏輯
@@ -16,7 +17,7 @@ engine 不需要修改（CLAUDE.md §10 預留接口）。
 from __future__ import annotations
 
 from src.broker.account import Account
-from src.broker.types import Bar, BrokerConfig, FillResult, LimitOrder, Trade
+from src.broker.types import Bar, BrokerConfig, FillResult, LimitOrder, Position, Trade
 from src.utils.exceptions import OrderExecutionError
 from src.utils.types import Direction
 
@@ -36,6 +37,8 @@ class BrokerSimulator:
         order: LimitOrder,
         bar: Bar,
         account: Account,
+        *,
+        allow_multi: bool = False,
     ) -> FillResult:
         """嘗試在 ``bar`` 撮合 ``order``。
 
@@ -44,16 +47,21 @@ class BrokerSimulator:
         - SHORT: ``bar.high >= limit_price`` → 成交於 ``limit_price``
         - 否則作廢，不延期到下根 K 線
 
+        Args:
+            allow_multi: 若為 True，呼叫 ``account.open_position_multi``，允許並行多倉。
+                預設 False（單倉模式，已有持倉則 raise）。
+
         Returns:
-            FillResult。``filled=True`` 時 account 已開倉、cash 已扣 fee。
+            FillResult。``filled=True`` 時 account 已開倉、cash 已扣 fee，
+            ``position_id`` 為新倉的 id（單倉模式下也會回傳）。
 
         Raises:
-            OrderExecutionError: account 已有持倉、成交價超出 bar 範圍。
+            OrderExecutionError: account 已有持倉（單倉模式）、成交價超出 bar 範圍。
         """
-        if account.has_position():
+        if not allow_multi and account.has_position():
+            existing = next(iter(account.positions.values()))
             raise OrderExecutionError(
-                f"cannot fill limit: account already has "
-                f"{account.position.direction} position"
+                f"cannot fill limit: account already has {existing.direction} position"
             )
 
         if order.direction is Direction.LONG:
@@ -132,20 +140,31 @@ class BrokerSimulator:
         notional = actual_quantity * fill_price
         fee = notional * self.config.taker_fee_rate
 
-        account.open_position(
-            direction=order.direction,
-            quantity=actual_quantity,
-            entry_price=fill_price,
-            entry_timestamp=bar.timestamp,
-            stop_price=order.initial_stop,
-            fee=fee,
-        )
+        if allow_multi:
+            pid = account.open_position_multi(
+                direction=order.direction,
+                quantity=actual_quantity,
+                entry_price=fill_price,
+                entry_timestamp=bar.timestamp,
+                stop_price=order.initial_stop,
+                fee=fee,
+            )
+        else:
+            pid = account.open_position(
+                direction=order.direction,
+                quantity=actual_quantity,
+                entry_price=fill_price,
+                entry_timestamp=bar.timestamp,
+                stop_price=order.initial_stop,
+                fee=fee,
+            )
 
         return FillResult(
             filled=True,
             fill_price=fill_price,
             fee=fee,
             reason=f"filled at {fill_price:.6f}",
+            position_id=pid,
         )
 
     # ----------------------------------------------------------------------- #
@@ -153,7 +172,31 @@ class BrokerSimulator:
     # ----------------------------------------------------------------------- #
 
     def check_stop(self, account: Account, bar: Bar) -> Trade | None:
-        """檢查 ``bar`` 是否觸發目前持倉的止損。
+        """單倉舊 API：持倉 ≤ 1 時等同舊版行為，若帳戶有 > 1 筆持倉則 raise。"""
+        n = account.position_count
+        if n == 0:
+            return None
+        if n > 1:
+            raise OrderExecutionError(
+                f"check_stop called with {n} open positions; use check_stops"
+            )
+        pid, pos = next(iter(account.positions.items()))
+        return self._check_one(account, bar, pid, pos)
+
+    def check_stops(self, account: Account, bar: Bar) -> list[Trade]:
+        """多倉新 API：遍歷所有持倉，回傳本根 K 平倉的 Trade list（保序）。"""
+        trades: list[Trade] = []
+        # 先 snapshot id 再迭代，避免在 close 過程修改 dict
+        for pid, pos in list(account.positions.items()):
+            trade = self._check_one(account, bar, pid, pos)
+            if trade is not None:
+                trades.append(trade)
+        return trades
+
+    def _check_one(
+        self, account: Account, bar: Bar, position_id: int, pos: Position
+    ) -> Trade | None:
+        """檢查單一持倉是否在 ``bar`` 觸發止損。
 
         多單：
         - 帶倉跨 bar 且 ``bar.open <= stop`` → 跳空 → 平倉於 ``bar.open``
@@ -161,17 +204,9 @@ class BrokerSimulator:
 
         空單為鏡像。
 
-        同根進場：``position.entry_timestamp == bar.timestamp`` → 不適用跳空規則
+        同根進場：``pos.entry_timestamp == bar.timestamp`` → 不適用跳空規則
         （我們是在當根開盤後進場的，不存在 bar 之前的價格資訊）。
-
-        Returns:
-            Trade（已關倉），若未觸發則 None。
         """
-        if not account.has_position():
-            return None
-
-        pos = account.position
-        assert pos is not None  # mypy hint
         is_carry_over = pos.entry_timestamp != bar.timestamp
 
         fill_price: float | None = None
@@ -202,7 +237,8 @@ class BrokerSimulator:
 
         notional = pos.quantity * fill_price
         fee = notional * self.config.taker_fee_rate
-        return account.close_position(
+        return account.close_position_by_id(
+            position_id=position_id,
             exit_price=fill_price,
             exit_timestamp=bar.timestamp,
             fee=fee,

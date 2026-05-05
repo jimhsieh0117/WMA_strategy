@@ -1,9 +1,16 @@
-"""帳戶狀態管理（cash / position / trade log / equity history）。
+"""帳戶狀態管理（cash / positions / trade log / equity history）。
 
 設計原則：
-- 1x 永續合約模型：開倉**不**扣 notional，只扣手續費；equity = cash + 未實現 PnL
+- 1x 永續合約模型：開倉**不**扣 notional，只扣手續費；equity = cash + 未實現 PnL 總和
+- 內部以 ``dict[position_id, Position]`` 儲存，可持有 0..N 筆並行倉位
 - 任何狀態變動皆做不變式檢查（CLAUDE.md §5），違反即 raise ``AccountInvariantError``
-- 對外暴露唯讀 property（trade_log / equity_history 回傳副本，避免外部誤改）
+
+API 風格：
+- 「單倉」舊 API（``open_position`` / ``close_position`` / ``update_stop`` / ``position``）
+  在 ≤ 1 筆持倉時行為與舊版完全一致；遇到 > 1 筆時 raise，避免歧義
+- 「多倉」新 API（``open_position_multi`` / ``close_position_by_id`` /
+  ``update_stop_by_id`` / ``positions``）由 engine 在 ``allow_pyramiding=True``
+  時使用
 """
 
 from __future__ import annotations
@@ -26,7 +33,8 @@ class Account:
         self._name = name
         self._initial_capital = float(initial_capital)
         self._cash = float(initial_capital)
-        self._position: Position | None = None
+        self._positions: dict[int, Position] = {}
+        self._next_position_id: int = 1
         self._trade_log: list[Trade] = []
         self._equity_history: list[tuple[pd.Timestamp, float]] = []
 
@@ -46,7 +54,29 @@ class Account:
 
     @property
     def position(self) -> Position | None:
-        return self._position
+        """單倉舊 API：0 筆 → None；1 筆 → 該 Position；>1 筆 → raise（呼叫方應改用 ``positions``）。"""
+        n = len(self._positions)
+        if n == 0:
+            return None
+        if n == 1:
+            return next(iter(self._positions.values()))
+        raise AccountInvariantError(
+            f"[{self._name}] account holds {n} positions; use `positions` instead of `position`"
+        )
+
+    @property
+    def positions(self) -> dict[int, Position]:
+        """多倉 API：回傳 dict 副本（避免外部誤改）。"""
+        return dict(self._positions)
+
+    @property
+    def position_count(self) -> int:
+        return len(self._positions)
+
+    @property
+    def total_notional_at_entry(self) -> float:
+        """所有未平倉的 entry 期 notional 加總，做槓桿檢查用。"""
+        return sum(p.notional_at_entry for p in self._positions.values())
 
     @property
     def trade_log(self) -> list[Trade]:
@@ -57,13 +87,19 @@ class Account:
         return list(self._equity_history)
 
     def has_position(self) -> bool:
-        return self._position is not None
+        return len(self._positions) > 0
 
     def equity(self, mark_price: float) -> float:
-        """以 ``mark_price`` mark-to-market 計算當下 equity。"""
-        if self._position is None:
-            return self._cash
-        return self._cash + self._position.unrealized_pnl(mark_price)
+        """以 ``mark_price`` mark-to-market 計算當下 equity（cash + 全部未實現 PnL）。"""
+        unrealized = sum(p.unrealized_pnl(mark_price) for p in self._positions.values())
+        return self._cash + unrealized
+
+    def position_by_id(self, position_id: int) -> Position:
+        if position_id not in self._positions:
+            raise AccountInvariantError(
+                f"[{self._name}] no open position with id={position_id}"
+            )
+        return self._positions[position_id]
 
     # ---------- state mutations ----------
 
@@ -75,17 +111,55 @@ class Account:
         entry_timestamp: pd.Timestamp,
         stop_price: float,
         fee: float,
-    ) -> None:
-        """開倉並從 cash 扣除手續費。
+    ) -> int:
+        """單倉舊 API：已有任何持倉時 raise，否則開倉。
 
-        Raises:
-            AccountInvariantError: 已有持倉、quantity / entry_price / fee 非法、
-                                   stop 與 direction 方向不一致、扣除手續費後 cash < 0。
+        Returns:
+            新 position_id。
         """
-        if self._position is not None:
+        if self._positions:
+            existing = next(iter(self._positions.values()))
             raise AccountInvariantError(
-                f"[{self._name}] cannot open: already has {self._position.direction} position"
+                f"[{self._name}] cannot open: already has {existing.direction} position"
             )
+        return self._open(
+            direction=direction,
+            quantity=quantity,
+            entry_price=entry_price,
+            entry_timestamp=entry_timestamp,
+            stop_price=stop_price,
+            fee=fee,
+        )
+
+    def open_position_multi(
+        self,
+        direction: Direction,
+        quantity: float,
+        entry_price: float,
+        entry_timestamp: pd.Timestamp,
+        stop_price: float,
+        fee: float,
+    ) -> int:
+        """多倉新 API：不檢查既有持倉，直接新增一筆，回傳新 position_id。"""
+        return self._open(
+            direction=direction,
+            quantity=quantity,
+            entry_price=entry_price,
+            entry_timestamp=entry_timestamp,
+            stop_price=stop_price,
+            fee=fee,
+        )
+
+    def _open(
+        self,
+        *,
+        direction: Direction,
+        quantity: float,
+        entry_price: float,
+        entry_timestamp: pd.Timestamp,
+        stop_price: float,
+        fee: float,
+    ) -> int:
         if quantity <= 0:
             raise AccountInvariantError(f"quantity must be > 0, got {quantity}")
         if entry_price <= 0:
@@ -108,8 +182,10 @@ class Account:
                 f"cash would go negative after fee: {self._cash} - {fee} = {new_cash}"
             )
 
+        pid = self._next_position_id
+        self._next_position_id += 1
         self._cash = new_cash
-        self._position = Position(
+        self._positions[pid] = Position(
             direction=direction,
             quantity=float(quantity),
             entry_price=float(entry_price),
@@ -117,7 +193,9 @@ class Account:
             stop_price=float(stop_price),
             entry_fee=float(fee),
             stop_history=[(entry_timestamp, float(stop_price))],
+            position_id=pid,
         )
+        return pid
 
     def close_position(
         self,
@@ -126,19 +204,41 @@ class Account:
         fee: float,
         reason: str,
     ) -> Trade:
-        """平倉並結算 PnL，產生不可變的 ``Trade`` 紀錄。
+        """單倉舊 API：恰好 1 筆持倉時平倉；0 / >1 時 raise。"""
+        n = len(self._positions)
+        if n == 0:
+            raise AccountInvariantError(f"[{self._name}] cannot close: no position")
+        if n > 1:
+            raise AccountInvariantError(
+                f"[{self._name}] cannot close: account holds {n} positions; "
+                "use close_position_by_id"
+            )
+        pid = next(iter(self._positions.keys()))
+        return self.close_position_by_id(pid, exit_price, exit_timestamp, fee, reason)
+
+    def close_position_by_id(
+        self,
+        position_id: int,
+        exit_price: float,
+        exit_timestamp: pd.Timestamp,
+        fee: float,
+        reason: str,
+    ) -> Trade:
+        """多倉新 API：依 ``position_id`` 平倉並產生 ``Trade`` 紀錄。
 
         Cash 變化：``cash += gross_pnl - exit_fee``。
-        （entry_fee 已在 ``open_position`` 時扣除，此處不重複處理。）
+        （entry_fee 已在開倉時扣除，此處不重複處理。）
         """
-        if self._position is None:
-            raise AccountInvariantError(f"[{self._name}] cannot close: no position")
         if exit_price <= 0:
             raise AccountInvariantError(f"exit_price must be > 0, got {exit_price}")
         if fee < 0:
             raise AccountInvariantError(f"fee must be >= 0, got {fee}")
+        if position_id not in self._positions:
+            raise AccountInvariantError(
+                f"[{self._name}] cannot close: no open position with id={position_id}"
+            )
 
-        pos = self._position
+        pos = self._positions[position_id]
         gross_pnl = pos.unrealized_pnl(exit_price)
         net_pnl = gross_pnl - pos.entry_fee - fee
         notional = pos.notional_at_entry
@@ -160,9 +260,10 @@ class Account:
             return_pct=float(return_pct),
             exit_reason=reason,
             stop_history=tuple(pos.stop_history),
+            position_id=pos.position_id,
         )
         self._trade_log.append(trade)
-        self._position = None
+        del self._positions[position_id]
         return trade
 
     def update_stop(
@@ -170,25 +271,41 @@ class Account:
         new_stop: float,
         timestamp: pd.Timestamp | None = None,
     ) -> None:
-        """直接覆寫止損價。
-
-        ratchet 規則（多單只能上移、空單只能下移）由 engine 判斷後才呼叫此方法。
-        本方法只檢查 ``new_stop > 0``，不檢查與 entry_price 相對位置——
-        因為拖曳止損可能移入利潤區（multi-bar 持有時 stop 可超越 entry），
-        該情境合法。
-
-        若提供 ``timestamp``，則同步寫入 ``position.stop_history``（圖表呈現用）。
-        測試中可省略以維持簡潔。
-        """
-        if self._position is None:
+        """單倉舊 API：恰好 1 筆持倉時更新 stop；0 / >1 時 raise。"""
+        n = len(self._positions)
+        if n == 0:
             raise AccountInvariantError(
                 f"[{self._name}] cannot update stop: no position"
             )
+        if n > 1:
+            raise AccountInvariantError(
+                f"[{self._name}] cannot update stop: account holds {n} positions; "
+                "use update_stop_by_id"
+            )
+        pid = next(iter(self._positions.keys()))
+        self.update_stop_by_id(pid, new_stop, timestamp)
+
+    def update_stop_by_id(
+        self,
+        position_id: int,
+        new_stop: float,
+        timestamp: pd.Timestamp | None = None,
+    ) -> None:
+        """多倉新 API：覆寫指定持倉的 stop_price。
+
+        ratchet 規則由 engine 決定後才呼叫；本方法只驗 ``new_stop > 0``。
+        若提供 ``timestamp``，同步寫入該倉位的 ``stop_history``（圖表用）。
+        """
         if new_stop <= 0:
             raise AccountInvariantError(f"new_stop must be > 0, got {new_stop}")
-        self._position.stop_price = float(new_stop)
+        if position_id not in self._positions:
+            raise AccountInvariantError(
+                f"[{self._name}] cannot update stop: no position with id={position_id}"
+            )
+        pos = self._positions[position_id]
+        pos.stop_price = float(new_stop)
         if timestamp is not None:
-            self._position.stop_history.append((timestamp, float(new_stop)))
+            pos.stop_history.append((timestamp, float(new_stop)))
 
     def snapshot_equity(self, mark_price: float, timestamp: pd.Timestamp) -> None:
         """記錄當下 equity 至歷史，供日後績效計算使用。"""
