@@ -313,21 +313,24 @@
     }
 
     // markers：long / short 的進出場
+    // 多倉並行（pyramiding）模式下，同一根 K 可能有多筆 entry / exit。
+    // marker 文字含 #position_id 讓 entry ↔ exit 能配對。
     const markers = [];
+    const pidTag = (t) => (t.position_id ? `#${t.position_id} ` : '');
     data.trades.long.forEach(t => {
       markers.push({
         time: t.entry_time,
         position: 'belowBar',
         color: '#2563eb',
         shape: 'arrowUp',
-        text: `L ${t.entry_price.toFixed(2)}`,
+        text: `L${pidTag(t)}${t.entry_price.toFixed(2)}`,
       });
       markers.push({
         time: t.exit_time,
         position: 'aboveBar',
         color: t.net_pnl >= 0 ? '#16a34a' : '#dc2626',
         shape: 'arrowDown',
-        text: `${t.return_pct >= 0 ? '+' : ''}${t.return_pct.toFixed(1)}%`,
+        text: `${pidTag(t)}${t.return_pct >= 0 ? '+' : ''}${t.return_pct.toFixed(1)}%`,
       });
     });
     data.trades.short.forEach(t => {
@@ -336,14 +339,14 @@
         position: 'aboveBar',
         color: '#ea580c',
         shape: 'arrowDown',
-        text: `S ${t.entry_price.toFixed(2)}`,
+        text: `S${pidTag(t)}${t.entry_price.toFixed(2)}`,
       });
       markers.push({
         time: t.exit_time,
         position: 'belowBar',
         color: t.net_pnl >= 0 ? '#16a34a' : '#dc2626',
         shape: 'arrowUp',
-        text: `${t.return_pct >= 0 ? '+' : ''}${t.return_pct.toFixed(1)}%`,
+        text: `${pidTag(t)}${t.return_pct >= 0 ? '+' : ''}${t.return_pct.toFixed(1)}%`,
       });
     });
     markers.sort((a, b) => a.time - b.time);

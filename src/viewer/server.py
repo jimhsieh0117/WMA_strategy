@@ -67,6 +67,7 @@ def _volume_records(df: pd.DataFrame) -> list[dict]:
 def _trade_records(trades: list[Trade]) -> list[dict]:
     return [
         {
+            "position_id": int(t.position_id),
             "direction": t.direction.value,
             "entry_time": _to_unix_seconds(t.entry_timestamp),
             "exit_time": _to_unix_seconds(t.exit_timestamp),
