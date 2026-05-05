@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from src.backtest.types import BacktestResult
 from src.broker.types import Trade
 from src.metrics.calculator import MetricsReport, compute_metrics
+from src.viewer.indicators import IndicatorRegistration
 from src.viewer.panels import PanelSpec, SeriesSpec
 
 
@@ -192,14 +193,27 @@ def _panel_payload(panel: PanelSpec, df: pd.DataFrame) -> dict:
 # 主 build_app
 # --------------------------------------------------------------------------- #
 
+def _indicator_payload(
+    reg: IndicatorRegistration, df: pd.DataFrame, *, enabled: bool
+) -> dict:
+    """組成單一指標的完整 payload（overlay + panel + enabled flag）。"""
+    return {
+        "name": reg.name,
+        "label": reg.display_label,
+        "enabled": enabled,
+        "overlay_series": [_series_payload(s, df) for s in reg.overlay_series],
+        "panel": _panel_payload(reg.panel, df) if reg.panel is not None else None,
+    }
+
+
 def build_app(
     *,
     symbol: str,
     timeframe: str,
     sample: str,
     df_main: pd.DataFrame,
-    main_overlays: list[SeriesSpec],
-    panels: list[PanelSpec],
+    indicators: list[IndicatorRegistration],
+    initial_enabled: list[str],
     long_result: BacktestResult,
     short_result: BacktestResult,
     combined_result: BacktestResult,
@@ -212,6 +226,11 @@ def build_app(
     short_metrics = compute_metrics(short_result, timeframe=timeframe)
     combined_metrics = compute_metrics(combined_result, timeframe=timeframe)
 
+    enabled_set = set(initial_enabled)
+    unknown = enabled_set - {r.name for r in indicators}
+    if unknown:
+        raise ValueError(f"initial_enabled 含未註冊指標：{sorted(unknown)}")
+
     payload = {
         "metadata": {
             "symbol": symbol,
@@ -222,7 +241,10 @@ def build_app(
             "combined_metrics": _metrics_summary(combined_metrics),
         },
         "ohlc": _ohlc_to_records(df_main),
-        "main_overlays": [_series_payload(s, df_main) for s in main_overlays],
+        "indicators": [
+            _indicator_payload(reg, df_main, enabled=(reg.name in enabled_set))
+            for reg in indicators
+        ],
         "trades": {
             "long": _trade_records(long_result.trades),
             "short": _trade_records(short_result.trades),
@@ -243,7 +265,6 @@ def build_app(
             "short": _line_records(short_result.equity_curve),
             "combined": _line_records(combined_result.equity_curve),
         },
-        "panels": [_panel_payload(p, df_main) for p in panels],
     }
 
     @app.get("/")

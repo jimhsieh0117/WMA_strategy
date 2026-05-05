@@ -42,6 +42,35 @@
     .metric-pill .value { color: #fafafa; font-weight: 500; }
     .metric-pill .value.pos { color: #16a34a; }
     .metric-pill .value.neg { color: #dc2626; }
+    #indicator-bar {
+      flex: 0 0 auto;
+      padding: 6px 18px;
+      background: #101010;
+      border-bottom: 1px solid #262626;
+      display: flex; gap: 6px; align-items: center;
+      flex-wrap: wrap;
+    }
+    #indicator-bar .ind-label {
+      font-size: 11px; color: #888; margin-right: 6px;
+      letter-spacing: 0.4px; text-transform: uppercase;
+    }
+    .ind-chip {
+      font-size: 12px;
+      padding: 3px 10px;
+      background: #1f1f1f;
+      border: 1px solid #2a2a2a;
+      color: #888;
+      border-radius: 999px;
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.12s ease;
+    }
+    .ind-chip:hover { border-color: #3b82f6; color: #cbd5e1; }
+    .ind-chip.active {
+      background: #1e3a8a;
+      border-color: #3b82f6;
+      color: #f1f5f9;
+    }
     #charts {
       flex: 1 1 auto;
       display: flex; flex-direction: column;
@@ -80,6 +109,9 @@
     <div id="header">
       <div id="title">Loading...</div>
       <div class="metric-group" id="metrics-row"></div>
+    </div>
+    <div id="indicator-bar">
+      <span class="ind-label">Indicators</span>
     </div>
     <div id="charts"><div id="loading">載入中...</div></div>
   </div>
@@ -134,13 +166,15 @@
     const mainRatio = 0.60;
     const equityRatio = 0.25;
     const panelTotalRatio = 1 - mainRatio - equityRatio;
-    const panelRatioSum = data.panels.reduce((s, p) => s + p.height_ratio, 0) || 1;
 
-    const heightFor = {
-      main: Math.floor(totalHeight * mainRatio),
-      panel: (p) => Math.floor(totalHeight * panelTotalRatio * (p.height_ratio / panelRatioSum)),
-      equity: Math.floor(totalHeight * equityRatio),
-    };
+    // panels 是動態的（使用者可切換顯隱），所以 panelRatioSum / heightFor.panel 都
+    // 依「當前可見的 panels」計算。
+    const heightForMain = Math.floor(totalHeight * mainRatio);
+    const heightForEquity = Math.floor(totalHeight * equityRatio);
+    function panelHeight(panelSpec, visiblePanelSpecs) {
+      const sum = visiblePanelSpecs.reduce((s, p) => s + p.height_ratio, 0) || 1;
+      return Math.floor(totalHeight * panelTotalRatio * (panelSpec.height_ratio / sum));
+    }
 
     // ----- 共同圖表選項 -----
     const baseOptions = (height) => ({
@@ -190,8 +224,8 @@
     // ===========================================================
     // 主圖：candlestick + overlays + markers
     // ===========================================================
-    const mainCanvas = makePanel('Price', heightFor.main);
-    const mainChart = createChart(mainCanvas, baseOptions(heightFor.main));
+    const mainCanvas = makePanel('Price', heightForMain);
+    const mainChart = createChart(mainCanvas, baseOptions(heightForMain));
     allCharts.push(mainChart);
 
     const candle = mainChart.addCandlestickSeries({
@@ -201,8 +235,15 @@
     });
     candle.setData(data.ohlc);
 
-    // overlays（BB / WMA）
-    data.main_overlays.forEach(s => {
+    // overlays / panels：依 data.indicators 一次建好全部，再依 enabled 切換顯隱
+    // ind 結構：{name, label, enabled, overlay_series:[...], panel: {...} | null}
+    //
+    // overlayRefsByName[name] = LineSeries[]   ← 用 applyOptions({visible}) 切換
+    // panelRefsByName[name]   = {wrapper, chart, spec}  ← 用 display none + reflow
+    const overlayRefsByName = {};
+    const panelRefsByName = {};
+
+    function buildOverlay(s) {
       const series = mainChart.addLineSeries({
         color: s.color,
         lineWidth: s.line_width,
@@ -212,6 +253,17 @@
         lastValueVisible: false,
       });
       series.setData(s.data);
+      return series;
+    }
+
+    data.indicators.forEach(ind => {
+      if (ind.overlay_series && ind.overlay_series.length) {
+        overlayRefsByName[ind.name] = ind.overlay_series.map(s => {
+          const series = buildOverlay(s);
+          if (!ind.enabled) series.applyOptions({ visible: false });
+          return series;
+        });
+      }
     });
 
     // ----- 持倉連線 + 止損軌道：每筆交易一條獨立 LineSeries -----
@@ -298,17 +350,34 @@
     candle.setMarkers(markers);
 
     // ===========================================================
-    // 各副面板
+    // 各副面板（依 data.indicators 中的 panel 物件）
+    // 全部一次建立，未勾選的 wrapper 隱藏；切換時 reflow 高度
     // ===========================================================
-    data.panels.forEach(panel => {
-      const h = heightFor.panel(panel);
-      const canvas = makePanel(panel.title, h);
+    function buildPanelChart(panelSpec) {
+      // 暫用初始可見集計算高度，之後 reflow 會重算
+      const initialVisible = data.indicators
+        .filter(i => i.enabled && i.panel)
+        .map(i => i.panel);
+      const h = panelHeight(panelSpec,
+        initialVisible.length ? initialVisible : [panelSpec]);
+      const wrapper = document.createElement('div');
+      wrapper.className = 'chart-panel';
+      wrapper.style.height = h + 'px';
+      const tag = document.createElement('div');
+      tag.className = 'panel-label';
+      tag.textContent = panelSpec.title;
+      wrapper.appendChild(tag);
+      const canvas = document.createElement('div');
+      canvas.className = 'chart-canvas';
+      wrapper.appendChild(canvas);
+      // equity 永遠在最後 → 插在 equity 之前。但 equity 還沒建，先 append。
+      chartsHost.appendChild(wrapper);
+
       const chart = createChart(canvas, baseOptions(h));
       allCharts.push(chart);
 
-      // 把 ref series 拿來附水平線（橫線需綁在某個 series 上）
       let refSeries = null;
-      panel.series.forEach((s, i) => {
+      panelSpec.series.forEach((s, i) => {
         let series;
         if (s.type === 'histogram') {
           series = chart.addHistogramSeries({
@@ -336,7 +405,7 @@
         if (i === 0) refSeries = series;
       });
 
-      panel.horizontal_lines.forEach(line => {
+      panelSpec.horizontal_lines.forEach(line => {
         if (refSeries) {
           refSeries.createPriceLine({
             price: line.value,
@@ -348,13 +417,23 @@
           });
         }
       });
+
+      return { wrapper, chart, spec: panelSpec };
+    }
+
+    data.indicators.forEach(ind => {
+      if (ind.panel) {
+        const ref = buildPanelChart(ind.panel);
+        if (!ind.enabled) ref.wrapper.style.display = 'none';
+        panelRefsByName[ind.name] = ref;
+      }
     });
 
     // ===========================================================
     // Equity panel（在最底）
     // ===========================================================
-    const equityCanvas = makePanel('Equity (USDT)', heightFor.equity);
-    const equityChart = createChart(equityCanvas, baseOptions(heightFor.equity));
+    const equityCanvas = makePanel('Equity (USDT)', heightForEquity);
+    const equityChart = createChart(equityCanvas, baseOptions(heightForEquity));
     allCharts.push(equityChart);
     const eqLong = equityChart.addLineSeries({
       color: '#2563eb', lineWidth: 1, title: 'Long', priceLineVisible: false,
@@ -388,6 +467,56 @@
           syncing = false;
         }
       });
+    });
+
+    // ===========================================================
+    // 指標下拉切換（chip toggle）
+    // ===========================================================
+    const indicatorBar = document.getElementById('indicator-bar');
+    // enabled 狀態用 Map 保存，避免重複查 data
+    const indicatorEnabled = new Map(
+      data.indicators.map(ind => [ind.name, ind.enabled])
+    );
+
+    function reflowPanelHeights() {
+      // 依當前可見 panels 重算 panel 高度（主圖/equity 不變）
+      const visibleSpecs = data.indicators
+        .filter(i => i.panel && indicatorEnabled.get(i.name))
+        .map(i => i.panel);
+      Object.entries(panelRefsByName).forEach(([name, ref]) => {
+        if (!indicatorEnabled.get(name)) return;
+        const h = panelHeight(ref.spec, visibleSpecs);
+        ref.wrapper.style.height = h + 'px';
+        ref.chart.applyOptions({ height: h });
+      });
+    }
+
+    function setIndicatorEnabled(name, enabled) {
+      indicatorEnabled.set(name, enabled);
+      // overlay：每條 LineSeries 切 visible
+      const overlays = overlayRefsByName[name];
+      if (overlays) {
+        overlays.forEach(s => s.applyOptions({ visible: enabled }));
+      }
+      // panel：wrapper 顯隱 + reflow
+      const panelRef = panelRefsByName[name];
+      if (panelRef) {
+        panelRef.wrapper.style.display = enabled ? '' : 'none';
+        reflowPanelHeights();
+      }
+    }
+
+    data.indicators.forEach(ind => {
+      const chip = document.createElement('div');
+      chip.className = 'ind-chip' + (ind.enabled ? ' active' : '');
+      chip.textContent = ind.label;
+      chip.dataset.name = ind.name;
+      chip.addEventListener('click', () => {
+        const next = !indicatorEnabled.get(ind.name);
+        chip.classList.toggle('active', next);
+        setIndicatorEnabled(ind.name, next);
+      });
+      indicatorBar.appendChild(chip);
     });
 
     // 初始 fit

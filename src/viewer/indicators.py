@@ -28,8 +28,13 @@ class IndicatorRegistration:
 
     name: str
     compute: Callable[[pd.DataFrame], pd.DataFrame]
+    label: str = ""              # UI 顯示名（chip / 下拉），空字串 → 用 name
     overlay_series: tuple[SeriesSpec, ...] = ()
     panel: PanelSpec | None = None
+
+    @property
+    def display_label(self) -> str:
+        return self.label or self.name.replace("_", " ").title()
 
 
 def _identity(df: pd.DataFrame) -> pd.DataFrame:
@@ -49,6 +54,7 @@ REGISTRY: dict[str, IndicatorRegistration] = {
     # ---- 主圖 overlay：策略已用的指標 ----
     "bollinger": IndicatorRegistration(
         name="bollinger",
+        label="Bollinger Bands",
         compute=_identity,
         overlay_series=(
             SeriesSpec("bb_upper", "BB Upper",
@@ -62,6 +68,7 @@ REGISTRY: dict[str, IndicatorRegistration] = {
     # entry_source="raw" 模式用：純 close 上的 WMA
     "wma": IndicatorRegistration(
         name="wma",
+        label="WMA (Raw)",
         compute=_identity,
         overlay_series=(
             SeriesSpec("wma_fast", "WMA Fast", color="#22d3ee"),
@@ -71,6 +78,7 @@ REGISTRY: dict[str, IndicatorRegistration] = {
     # entry_source="ha" 模式用：HA_close 上的 WMA
     "ha_wma": IndicatorRegistration(
         name="ha_wma",
+        label="WMA (HA)",
         compute=_identity,
         overlay_series=(
             SeriesSpec("ha_wma_fast", "HA-WMA Fast",
@@ -83,6 +91,7 @@ REGISTRY: dict[str, IndicatorRegistration] = {
     # ---- 獨立副面板 ----
     "volume": IndicatorRegistration(
         name="volume",
+        label="Volume",
         compute=_identity,
         panel=PanelSpec(
             id="volume",
@@ -96,6 +105,7 @@ REGISTRY: dict[str, IndicatorRegistration] = {
     ),
     "wavetrend": IndicatorRegistration(
         name="wavetrend",
+        label="WaveTrend",
         compute=_compute_wavetrend,
         panel=PanelSpec(
             id="wavetrend",

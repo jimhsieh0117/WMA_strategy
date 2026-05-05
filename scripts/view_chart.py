@@ -41,7 +41,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--panels", nargs="*", default=None,
-        help=f"指標清單；預設依 entry_source 自動選。可選: {sorted(REGISTRY)}",
+        help=(
+            "指標**初始勾選**清單；server 永遠載入全部指標，"
+            f"使用者可在網頁 UI 切換。預設依 entry_source 自動選。"
+            f"可選: {sorted(REGISTRY)}"
+        ),
     )
     parser.add_argument("--no-open", action="store_true",
                         help="不要自動開瀏覽器")
@@ -54,8 +58,8 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    panel_names = args.panels or default_panels_for(cfg.entry_source)
-    for name in panel_names:
+    initial_enabled = args.panels or default_panels_for(cfg.entry_source)
+    for name in initial_enabled:
         if name not in REGISTRY:
             raise SystemExit(
                 f"unknown panel '{name}'. available: {sorted(REGISTRY)}"
@@ -96,18 +100,10 @@ def main() -> None:
     )
     augmented = prepare_indicators(df, params)
 
-    # 套用面板要求的額外指標（如 WaveTrend）
-    for name in panel_names:
-        augmented = REGISTRY[name].compute(augmented)
-
-    # 收集 overlays + panels
-    main_overlays: list = []
-    panels: list = []
-    for name in panel_names:
-        reg = REGISTRY[name]
-        main_overlays.extend(reg.overlay_series)
-        if reg.panel is not None:
-            panels.append(reg.panel)
+    # 永遠把 REGISTRY 內所有指標都算好；前端再依 enabled 切換顯隱
+    all_indicators = list(REGISTRY.values())
+    for reg in all_indicators:
+        augmented = reg.compute(augmented)
 
     # ---- 啟動 server ----
     print("[4/4] 啟動 FastAPI...")
@@ -116,8 +112,8 @@ def main() -> None:
         timeframe=cfg.timeframe,
         sample=args.sample,
         df_main=augmented,
-        main_overlays=main_overlays,
-        panels=panels,
+        indicators=all_indicators,
+        initial_enabled=initial_enabled,
         long_result=long_result,
         short_result=short_result,
         combined_result=combined_result,
@@ -127,7 +123,8 @@ def main() -> None:
     print()
     print("=" * 60)
     print(f"  📊 圖表服務啟動於：{url}")
-    print(f"     面板：{panel_names}")
+    print(f"     初始勾選：{initial_enabled}")
+    print(f"     全部指標：{sorted(REGISTRY)}（可於網頁切換）")
     print(f"     按 Ctrl+C 停止伺服器")
     print("=" * 60)
     print()
