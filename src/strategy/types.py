@@ -60,6 +60,22 @@ class TrailingStopParams:
     bollinger_period: int = 20
     bollinger_num_std: float = 2.0
 
+    # Stage 3 候選計算模式：
+    #   "bollinger" = 追 Bollinger lower/upper（原版）
+    #   "r_ladder"  = R 倍數階梯：peak 跨 (N+offset_trigger)R 後鎖到 (N+offset_stop)R
+    stage3_mode: Literal["bollinger", "r_ladder"] = "bollinger"
+
+    # r_ladder 參數（normal R）
+    r_ladder_normal_first_trigger: float = 2.8   # 第一檔啟動倍數
+    r_ladder_normal_step: float = 1.0            # 檔距
+    # r_ladder 參數（abnormal R，倍數加倍）
+    r_ladder_abnormal_first_trigger: float = 5.6
+    r_ladder_abnormal_step: float = 2.0
+    # 啟動倍數與鎖倉倍數的差（trigger − stop）。
+    # normal=0.3 → 2.8 觸發鎖到 2.5；abnormal=0.6 → 5.6 觸發鎖到 5.0
+    r_ladder_trigger_offset: float = 0.3
+    r_ladder_abnormal_trigger_offset: float = 0.6
+
     def __post_init__(self) -> None:
         for name, val, low_ok in [
             ("swing_lookback", self.swing_lookback, 1),
@@ -89,6 +105,37 @@ class TrailingStopParams:
             raise ConfigError(
                 f"stage3_abnormal_trigger_r ({self.stage3_abnormal_trigger_r}) "
                 f"must be >= stage2_abnormal_trigger_r ({self.stage2_abnormal_trigger_r})"
+            )
+
+        if self.stage3_mode not in ("bollinger", "r_ladder"):
+            raise ConfigError(
+                f"stage3_mode must be 'bollinger' or 'r_ladder', got {self.stage3_mode!r}"
+            )
+
+        for name, val in [
+            ("r_ladder_normal_first_trigger", self.r_ladder_normal_first_trigger),
+            ("r_ladder_abnormal_first_trigger", self.r_ladder_abnormal_first_trigger),
+            ("r_ladder_trigger_offset", self.r_ladder_trigger_offset),
+            ("r_ladder_abnormal_trigger_offset", self.r_ladder_abnormal_trigger_offset),
+        ]:
+            if val <= 0:
+                raise ConfigError(f"{name} must be > 0, got {val}")
+        for name, val in [
+            ("r_ladder_normal_step", self.r_ladder_normal_step),
+            ("r_ladder_abnormal_step", self.r_ladder_abnormal_step),
+        ]:
+            if val <= 0:
+                raise ConfigError(f"{name} must be > 0, got {val}")
+        # offset 必須小於 step，否則相鄰檔的 stop 會超過下一檔的 trigger
+        if self.r_ladder_trigger_offset >= self.r_ladder_normal_step:
+            raise ConfigError(
+                f"r_ladder_trigger_offset ({self.r_ladder_trigger_offset}) "
+                f"must be < r_ladder_normal_step ({self.r_ladder_normal_step})"
+            )
+        if self.r_ladder_abnormal_trigger_offset >= self.r_ladder_abnormal_step:
+            raise ConfigError(
+                f"r_ladder_abnormal_trigger_offset ({self.r_ladder_abnormal_trigger_offset}) "
+                f"must be < r_ladder_abnormal_step ({self.r_ladder_abnormal_step})"
             )
 
 

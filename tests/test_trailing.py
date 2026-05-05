@@ -314,3 +314,111 @@ class TestTransitionLog:
         assert len(trans) == 2
         assert trans[0].from_stage == 1 and trans[0].to_stage == 2
         assert trans[1].from_stage == 2 and trans[1].to_stage == 3
+
+
+# --------------------------------------------------------------------------- #
+# Stage 3 r_ladder 模式
+# --------------------------------------------------------------------------- #
+
+class TestRLadder:
+    """r_ladder：peak 跨 (first + k·step)R 後鎖到 (first + k·step − offset)R。"""
+
+    def _ladder_params(self) -> TrailingStopParams:
+        return TrailingStopParams(stage3_mode="r_ladder")
+
+    def test_long_first_rung_28r_locks_25r(self) -> None:
+        # entry=100, stop=95 → R=5；2.8R=14 ⇒ high=114；stop 候選 = 100+2.5*5=112.5
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=self._ladder_params(),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(5)
+        bar = _bar(o=100.0, h=114.0, l=99.5, c=113.0)
+        new_stop = ctrl.update(bar, df, 0, current_stop=95.0)
+        assert ctrl.stage == 3
+        assert new_stop == pytest.approx(112.5)
+
+    def test_long_higher_rung_38r_locks_35r(self) -> None:
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=self._ladder_params(),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(5)
+        # peak=3.8R=19 → high=119；stop 候選 = 100 + 3.5*5 = 117.5
+        bar = _bar(o=100.0, h=119.0, l=99.5, c=118.0)
+        new_stop = ctrl.update(bar, df, 0, current_stop=95.0)
+        assert new_stop == pytest.approx(117.5)
+
+    def test_long_below_first_trigger_no_ladder(self) -> None:
+        # peak=2.5R 還不到 2.8R → 沒有 ladder 候選；stop 應為 stage2 保本值
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=self._ladder_params(),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(5)
+        # 先強行進到 stage 3：給一根 high=114 觸發
+        ctrl.update(_bar(100.0, 114.0, 99.5, 113.0), df, 0, current_stop=95.0)
+        # 接著一根 high 退到 2.5R=112.5（雖低於 first_trigger，但 peak 已是 2.8R+ 不變）
+        # 為驗證「peak 從未到 2.8R 的情況」，新建一個 controller
+        ctrl2 = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=self._ladder_params(),
+            broker_config=_broker_cfg(),
+        )
+        # 先把它推到 stage 3（trigger 預設 2.4R=12 → high=112.5 即可）
+        ctrl2.update(_bar(100.0, 112.5, 99.5, 112.0), df, 0, current_stop=95.0)
+        assert ctrl2.stage == 3
+        # peak=2.5R 未達 first_trigger=2.8R → ladder 回 None，候選退回 stage2 保本
+        new_stop = ctrl2.update(_bar(100.0, 112.5, 99.5, 112.0), df, 1,
+                                current_stop=95.0)
+        # stage2 保本 = 100*(1+2*0.0005) + 0.2*5 = 101.1
+        assert new_stop == pytest.approx(101.1)
+
+    def test_short_first_rung_28r_locks_25r(self) -> None:
+        # entry=100, stop=105 → R=5；空單 2.8R 下移至 86，stop 候選 = 100 − 2.5*5 = 87.5
+        ctrl = TrailingStopController(
+            position=_short_position(entry=100.0, stop=105.0),
+            params=self._ladder_params(),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(5)
+        bar = _bar(o=100.0, h=100.5, l=86.0, c=87.0)
+        new_stop = ctrl.update(bar, df, 0, current_stop=105.0)
+        assert ctrl.stage == 3
+        assert new_stop == pytest.approx(87.5)
+
+    def test_ladder_ratchet_not_pulled_back(self) -> None:
+        # 先到 3.8R 鎖 117.5；之後 peak 退回 3.0R，stop 不應回退
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=self._ladder_params(),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(5)
+        ctrl.update(_bar(100.0, 119.0, 99.5, 118.0), df, 0, current_stop=95.0)
+        # 下一根 high 只到 115（3.0R），peak_progress_r 仍是 3.8R
+        new_stop = ctrl.update(_bar(115.0, 115.0, 113.0, 114.0), df, 1,
+                               current_stop=117.5)
+        # 候選仍為 117.5，與 current 相等→ ratchet 判定非「更有利」回 None
+        assert new_stop is None
+
+    def test_abnormal_r_uses_doubled_first_trigger(self) -> None:
+        # 構造 abnormal R：R < 2*taker*entry。taker=0.05，entry=100 → 雙向成本=10
+        # 設 R=8（abnormal），entry=100 stop=92。第一檔 5.6R=44.8 → high=144.8
+        # stop = 100 + 5.0*8 = 140.0
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=92.0),
+            params=self._ladder_params(),
+            broker_config=_broker_cfg(taker=0.05),  # 雙向 10% > R=8 → abnormal
+        )
+        assert ctrl.is_abnormal_r is True
+        df = _make_df(5)
+        # 先把 stage 推到 3：abnormal stage3 trigger=4.8R → 4.8*8=38.4 → high≥138.4
+        # 同時 5.6R=44.8 ≤ high，所以 ladder 也會觸發
+        bar = _bar(o=100.0, h=144.8, l=99.5, c=140.0)
+        new_stop = ctrl.update(bar, df, 0, current_stop=92.0)
+        assert ctrl.stage == 3
+        assert new_stop == pytest.approx(140.0)

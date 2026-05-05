@@ -95,6 +95,8 @@ class TrailingStopController:
             self.stage3_trigger = params.stage3_normal_trigger_r
 
         self.stage = 1
+        # 追蹤歷史最大有利進度（單位 R），給 r_ladder 模式判斷觸發過的最高檔
+        self.peak_progress_r = 0.0
         self._transitions: list[StageTransition] = []
 
         logger.debug(
@@ -128,6 +130,8 @@ class TrailingStopController:
         """
         # 1. 用 bar 的有利方向極值衡量本根 K 達到的進度（多→high、空→low）
         progress_r = self._compute_progress_r(bar)
+        if progress_r > self.peak_progress_r:
+            self.peak_progress_r = progress_r
 
         # 2. 階段推進（單向）
         if self.stage == 1 and progress_r >= self.stage2_trigger:
@@ -195,14 +199,18 @@ class TrailingStopController:
         if self.stage == 2:
             return stage2_value
 
-        # Stage 3: 取 stage2_value 與 Bollinger 之中有利者
-        bb_value = self._bollinger_stop(df, bar_index)
-        if bb_value is None or math.isnan(bb_value):
+        # Stage 3: 依 mode 決定追蹤候選，再與 stage2_value 取較有利者作為 floor / ceiling
+        if self.params.stage3_mode == "r_ladder":
+            track_value = self._r_ladder_stop()
+        else:
+            track_value = self._bollinger_stop(df, bar_index)
+
+        if track_value is None or math.isnan(track_value):
             return stage2_value
 
         if self.direction is Direction.LONG:
-            return max(stage2_value, bb_value)
-        return min(stage2_value, bb_value)
+            return max(stage2_value, track_value)
+        return min(stage2_value, track_value)
 
     def _stage2_breakeven_stop(self) -> float:
         """保本 + 雙向手續費 + buffer_r×R。
@@ -216,6 +224,34 @@ class TrailingStopController:
         if self.direction is Direction.LONG:
             return self.entry_price * (1 + cost_pct) + buffer
         return self.entry_price * (1 - cost_pct) - buffer
+
+    def _r_ladder_stop(self) -> float | None:
+        """R 倍數階梯：peak 跨 (first + k·step)R 後，stop 鎖到 (first + k·step − offset)R。
+
+        normal: first=2.8, step=1.0, offset=0.3 →
+            peak ≥ 2.8R → stop = 2.5R；peak ≥ 3.8R → stop = 3.5R；…
+        abnormal（R < 雙向手續費）: first=5.6, step=2.0 →
+            peak ≥ 5.6R → stop = 5.0R；peak ≥ 7.6R → stop = 7.0R；…
+        """
+        if self.is_abnormal_r:
+            first = self.params.r_ladder_abnormal_first_trigger
+            step = self.params.r_ladder_abnormal_step
+            offset = self.params.r_ladder_abnormal_trigger_offset
+        else:
+            first = self.params.r_ladder_normal_first_trigger
+            step = self.params.r_ladder_normal_step
+            offset = self.params.r_ladder_trigger_offset
+
+        if self.peak_progress_r < first:
+            return None
+
+        # 已觸發的最高檔 k：peak ≥ first + k·step
+        k = int(math.floor((self.peak_progress_r - first) / step))
+        stop_r = first + k * step - offset
+
+        if self.direction is Direction.LONG:
+            return self.entry_price + stop_r * self.R
+        return self.entry_price - stop_r * self.R
 
     def _bollinger_stop(
         self, df: pd.DataFrame, bar_index: int

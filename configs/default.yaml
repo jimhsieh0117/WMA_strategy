@@ -4,12 +4,12 @@ data:
   # 唯讀來源（PPO_TradingModel 已下載的 1m parquet）
   source_parquet: /Users/jim_hsieh/Documents/GitHub/PPO_TradingModel/data/processed/ETHUSDT_1m.parquet
   symbol: ETHUSDT
-  timeframe: 15m   # 1m / 3m / 5m / 15m / 30m / 1H / 4H
+  timeframe: 5m   # 1m / 3m / 5m / 15m / 30m / 1H / 4H
 
 period:
   in_sample:
-    start: 2023-01-01
-    end:   2023-02-01
+    start: 2023-03-01
+    end:   2023-04-01
   out_of_sample:
     start: 2025-01-01
     end:   null   # null = 用到資料最後一根
@@ -23,7 +23,7 @@ account:
   #         qty = R / [|entry−stop| + (entry+stop)×taker]（含雙向手續費；
   #         滑點已內含於 entry_price，不重複計）。
   #         若 R 過小導致 notional > equity → 視為過槓桿，拒絕該筆訂單
-  sizing_mode: pct                # pct | risk
+  sizing_mode: risk                # pct | risk
   position_size_pct: 0.60         # sizing_mode=pct 時生效
   risk_per_trade_usdt: 1.0        # sizing_mode=risk 時生效（每筆 stop-out 的固定虧損）
 
@@ -31,7 +31,7 @@ account:
   #   false（預設）：與舊版一致，已有持倉時會略過新訊號
   #   true：每根 K 線最多新增 1 筆，每筆獨立 stop / 獨立 trailing controller
   #         受 leverage_cap 限制總 notional：Σ open_notional + new ≤ equity × leverage_cap
-  allow_pyramiding: false
+  allow_pyramiding: true
   leverage_cap: 1.0               # 1.0 = 不允許實質槓桿；只在 allow_pyramiding=true 生效
 
 fees:
@@ -57,11 +57,25 @@ strategy:
     stage2_abnormal_trigger_r:  2.4     # 異常 R（R<手續費+滑點）：2.4R 觸發
     stage2_buffer_r:            0.2     # 保本 stop 額外 +0.2R buffer
 
-    # Stage 3：Bollinger 跟蹤
-    stage3_normal_trigger_r:    2.4     # 正常 R：2.4R 切到 BB 跟蹤
-    stage3_abnormal_trigger_r:  4.8     # 異常 R：4.8R 切到 BB 跟蹤
-    bollinger_period:           20      # WMA 中軌週期
-    bollinger_num_std:          2.0     # 上下軌 ±2σ
+    # Stage 3：跟蹤模式
+    stage3_normal_trigger_r:    2.4     # 正常 R：進入 Stage 3 的 trigger
+    stage3_abnormal_trigger_r:  4.8     # 異常 R：進入 Stage 3 的 trigger
+
+    #   bollinger = Bollinger band 跟蹤（原版）
+    #   r_ladder  = R 倍數階梯：peak 跨 (N+0.8)R 鎖到 (N+0.5)R；異常 R 時倍數×2
+    stage3_mode: bollinger              # bollinger | r_ladder
+
+    # bollinger mode 參數
+    bollinger_period:           20
+    bollinger_num_std:          2.0
+
+    # r_ladder mode 參數
+    r_ladder_normal_first_trigger:   2.8   # normal R：2.8R 第一檔啟動
+    r_ladder_normal_step:            1.0   # 檔距（2.8 → 3.8 → 4.8 …）
+    r_ladder_abnormal_first_trigger: 5.6   # abnormal R：5.6R 第一檔啟動
+    r_ladder_abnormal_step:          2.0   # abnormal 檔距（5.6 → 7.6 → 9.6 …）
+    r_ladder_trigger_offset:         0.3   # trigger − stop（2.8 觸發 → 鎖 2.5）
+    r_ladder_abnormal_trigger_offset: 0.6  # abnormal：5.6 觸發 → 鎖 5.0
 
 backtest:
   output_dir: results

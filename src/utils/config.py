@@ -51,6 +51,14 @@ class TrailingConfig:
     bollinger_period: int = 20
     bollinger_num_std: float = 2.0
 
+    stage3_mode: str = "bollinger"   # "bollinger" | "r_ladder"
+    r_ladder_normal_first_trigger: float = 2.8
+    r_ladder_normal_step: float = 1.0
+    r_ladder_abnormal_first_trigger: float = 5.6
+    r_ladder_abnormal_step: float = 2.0
+    r_ladder_trigger_offset: float = 0.3
+    r_ladder_abnormal_trigger_offset: float = 0.6
+
 
 @dataclass(frozen=True)
 class FullConfig:
@@ -183,6 +191,19 @@ def load_config(path: str | Path) -> FullConfig:
         stage3_abnormal_trigger_r=float(trailing_raw.get("stage3_abnormal_trigger_r", 4.8)),
         bollinger_period=int(trailing_raw.get("bollinger_period", 20)),
         bollinger_num_std=float(trailing_raw.get("bollinger_num_std", 2.0)),
+        stage3_mode=str(trailing_raw.get("stage3_mode", "bollinger")).lower(),
+        r_ladder_normal_first_trigger=float(
+            trailing_raw.get("r_ladder_normal_first_trigger", 2.8)
+        ),
+        r_ladder_normal_step=float(trailing_raw.get("r_ladder_normal_step", 1.0)),
+        r_ladder_abnormal_first_trigger=float(
+            trailing_raw.get("r_ladder_abnormal_first_trigger", 5.6)
+        ),
+        r_ladder_abnormal_step=float(trailing_raw.get("r_ladder_abnormal_step", 2.0)),
+        r_ladder_trigger_offset=float(trailing_raw.get("r_ladder_trigger_offset", 0.3)),
+        r_ladder_abnormal_trigger_offset=float(
+            trailing_raw.get("r_ladder_abnormal_trigger_offset", 0.6)
+        ),
     )
 
     # ---- backtest ----

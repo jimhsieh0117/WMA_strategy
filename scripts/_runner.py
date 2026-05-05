@@ -96,6 +96,13 @@ def run_single_strategy(
         stage3_abnormal_trigger_r=cfg.trailing.stage3_abnormal_trigger_r,
         bollinger_period=cfg.trailing.bollinger_period,
         bollinger_num_std=cfg.trailing.bollinger_num_std,
+        stage3_mode=cfg.trailing.stage3_mode,  # type: ignore[arg-type]
+        r_ladder_normal_first_trigger=cfg.trailing.r_ladder_normal_first_trigger,
+        r_ladder_normal_step=cfg.trailing.r_ladder_normal_step,
+        r_ladder_abnormal_first_trigger=cfg.trailing.r_ladder_abnormal_first_trigger,
+        r_ladder_abnormal_step=cfg.trailing.r_ladder_abnormal_step,
+        r_ladder_trigger_offset=cfg.trailing.r_ladder_trigger_offset,
+        r_ladder_abnormal_trigger_offset=cfg.trailing.r_ladder_abnormal_trigger_offset,
     )
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
