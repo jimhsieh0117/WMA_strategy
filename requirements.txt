@@ -6,6 +6,9 @@ pyarrow>=15.0
 # Config
 pyyaml>=6.0
 
+# Exchange data
+ccxt>=4.0
+
 # Visualization
 matplotlib>=3.8
 

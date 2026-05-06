@@ -15,6 +15,10 @@ env/
 # Backtest outputs (per CLAUDE.md §9)
 results/
 
+# Live simulation outputs
+live_sim/results/
+live_sim/data/
+
 # Data caches (raw parquet stays in PPO_TradingModel, never copied here)
 data/cache/
 *.parquet.cache

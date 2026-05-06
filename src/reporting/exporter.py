@@ -65,6 +65,8 @@ def export_trades_csv(trades: list[Trade], output_path: str | Path) -> Path:
                 "direction", "entry_ts", "exit_ts", "entry_price", "exit_price",
                 "quantity", "gross_pnl", "net_pnl", "return_pct", "exit_reason",
                 "entry_fee", "exit_fee", "holding_minutes",
+                "entry_notional", "initial_stop", "stop_distance",
+                "risk_usdt_no_fee", "position_value_per_1u",
             ]
         )
     else:
@@ -84,6 +86,11 @@ def export_trades_csv(trades: list[Trade], output_path: str | Path) -> Path:
                     "entry_fee": t.entry_fee,
                     "exit_fee": t.exit_fee,
                     "holding_minutes": t.holding_duration.total_seconds() / 60.0,
+                    "entry_notional": t.entry_price * t.quantity,
+                    "initial_stop": _initial_stop(t),
+                    "stop_distance": _stop_distance(t),
+                    "risk_usdt_no_fee": _risk_usdt_no_fee(t),
+                    "position_value_per_1u": _position_value_per_1u(t),
                 }
                 for t in trades
             ]
@@ -92,6 +99,33 @@ def export_trades_csv(trades: list[Trade], output_path: str | Path) -> Path:
     df.to_csv(out, index=False)
     logger.info("trades.csv saved: %s (%d rows)", out, len(df))
     return out
+
+
+def _initial_stop(trade: Trade) -> float | None:
+    if not trade.stop_history:
+        return None
+    return float(trade.stop_history[0][1])
+
+
+def _stop_distance(trade: Trade) -> float | None:
+    initial_stop = _initial_stop(trade)
+    if initial_stop is None:
+        return None
+    return abs(float(trade.entry_price) - initial_stop)
+
+
+def _risk_usdt_no_fee(trade: Trade) -> float | None:
+    distance = _stop_distance(trade)
+    if distance is None:
+        return None
+    return distance * float(trade.quantity)
+
+
+def _position_value_per_1u(trade: Trade) -> float | None:
+    distance = _stop_distance(trade)
+    if distance is None or distance <= 0:
+        return None
+    return float(trade.entry_price) / distance
 
 
 def export_summary_text(
