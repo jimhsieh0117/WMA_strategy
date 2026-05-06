@@ -65,6 +65,7 @@ def export_trades_csv(trades: list[Trade], output_path: str | Path) -> Path:
                 "direction", "entry_ts", "exit_ts", "entry_price", "exit_price",
                 "quantity", "gross_pnl", "net_pnl", "return_pct", "exit_reason",
                 "entry_fee", "exit_fee", "holding_minutes",
+                "position_id",
                 "entry_notional", "initial_stop", "stop_distance",
                 "risk_usdt_no_fee", "position_value_per_1u",
             ]
@@ -86,6 +87,7 @@ def export_trades_csv(trades: list[Trade], output_path: str | Path) -> Path:
                     "entry_fee": t.entry_fee,
                     "exit_fee": t.exit_fee,
                     "holding_minutes": t.holding_duration.total_seconds() / 60.0,
+                    "position_id": t.position_id,
                     "entry_notional": t.entry_price * t.quantity,
                     "initial_stop": _initial_stop(t),
                     "stop_distance": _stop_distance(t),

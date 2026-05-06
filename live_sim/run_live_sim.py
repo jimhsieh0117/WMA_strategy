@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
 
 import ccxt
 import pandas as pd
@@ -43,6 +43,27 @@ from src.utils.validation import validate_ohlc  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+EventType = Literal["ENTRY", "EXIT"]
+
+
+@dataclass(frozen=True)
+class PositionEvent:
+    timestamp: pd.Timestamp
+    position_id: int
+    direction: Direction
+    event: EventType
+    price: float
+    quantity: float
+    reason: str
+    stop_price: float | None = None
+
+
+@dataclass(frozen=True)
+class LiveBarResult:
+    closed_trades: list[Trade]
+    events: list[PositionEvent]
+
+
 @dataclass
 class LiveEngine:
     name: str
@@ -58,14 +79,15 @@ class LiveEngine:
     signals_skipped_pending: int = 0
     bars_processed: int = 0
 
-    def process_bar(self, df: pd.DataFrame, bar_index: int) -> list[Trade]:
-        """Process a single closed bar and return closed trades."""
+    def process_bar(self, df: pd.DataFrame, bar_index: int) -> LiveBarResult:
+        """處理單根已收盤 K 線，回傳平倉交易與進出場事件。"""
         ts = df.index[bar_index]
         row = df.iloc[bar_index]
         bar = Bar.from_row(ts, row)
         closed_trades: list[Trade] = []
+        events: list[PositionEvent] = []
 
-        # Step 1: fill pending limit at this bar open
+        # Step 1: 撮合 pending 限價單（在本根開盤）
         if self.pending_signal is not None:
             limit_price = _compute_limit_price(bar.open, self.pending_signal.direction, self.broker.config.slippage_pct)
             equity_now = self.account.equity(bar.open)
@@ -107,6 +129,8 @@ class LiveEngine:
                         pid = result.position_id
                         if pid is None:
                             raise DataIntegrityError("filled order missing position_id")
+                        if result.fill_price is None:
+                            raise DataIntegrityError("filled order missing fill_price")
                         new_pos = self.account.position_by_id(pid)
                         controller = TrailingStopController(
                             position=new_pos,
@@ -114,6 +138,16 @@ class LiveEngine:
                             broker_config=self.broker.config,
                         )
                         self.trailings[pid] = controller
+                        events.append(PositionEvent(
+                            timestamp=bar.timestamp,
+                            position_id=pid,
+                            direction=new_pos.direction,
+                            event="ENTRY",
+                            price=float(result.fill_price),
+                            quantity=new_pos.quantity,
+                            reason=self.pending_signal.reason,
+                            stop_price=new_pos.stop_price,
+                        ))
                         logger.debug(
                             "[%s] FILLED %s @ %.4f qty=%.6f stop=%.4f pid=%d",
                             self.name,
@@ -147,11 +181,21 @@ class LiveEngine:
                 self.signals_unfilled += 1
             self.pending_signal = None
 
-        # Step 2: intrabar stop checks
+        # Step 2: 盤中止損檢查
         if self.account.has_position():
             closed_trades = self.broker.check_stops(self.account, bar)
             for trade in closed_trades:
                 self.trailings.pop(trade.position_id, None)
+                events.append(PositionEvent(
+                    timestamp=trade.exit_timestamp,
+                    position_id=trade.position_id,
+                    direction=trade.direction,
+                    event="EXIT",
+                    price=trade.exit_price,
+                    quantity=trade.quantity,
+                    reason=trade.exit_reason,
+                    stop_price=_last_stop_price(trade),
+                ))
                 logger.debug(
                     "[%s] STOP %s @ %.4f net_pnl=%.4f reason=%s pid=%d",
                     self.name,
@@ -162,7 +206,7 @@ class LiveEngine:
                     trade.position_id,
                 )
 
-        # Step 3a: ratchet trailing stops
+        # Step 3a: 收盤 ratchet 拖曳止損
         for pid, pos in self.account.positions.items():
             controller = self.trailings.get(pid)
             if controller is None:
@@ -186,7 +230,7 @@ class LiveEngine:
                     controller.stage,
                 )
 
-        # Step 3b: detect new entry signal on close
+        # Step 3b: 收盤偵測進場訊號
         can_detect = self.config.allow_pyramiding or not self.account.has_position()
         if can_detect:
             new_signal = self.strategy.detect_entry(df, bar_index)
@@ -198,10 +242,10 @@ class LiveEngine:
                 else:
                     self.pending_signal = new_signal
 
-        # Step 4: snapshot equity at close
+        # Step 4: 記錄權益
         self.account.snapshot_equity(bar.close, ts)
         self.bars_processed += 1
-        return closed_trades
+        return LiveBarResult(closed_trades=closed_trades, events=events)
 
     def force_close(self, last_bar: Bar) -> None:
         if not self.account.has_position():
@@ -246,6 +290,7 @@ def main() -> None:
     kline_path = data_dir / f"{run_tag}_klines.csv"
     trades_stream_path = run_dir / "trades_live.csv"
     equity_stream_path = run_dir / "equity_curve_live.csv"
+    position_events_path = run_dir / "position_events.csv"
 
     exchange = _build_exchange()
     symbol = _resolve_symbol(cfg.symbol, exchange)
@@ -256,7 +301,7 @@ def main() -> None:
     warmup_bars = params.warmup_bars
     warmup_limit = warmup_bars + max(args.warmup_extra, 0)
 
-    logger.info("Live sim start: symbol=%s timeframe=%s warmup=%d", symbol, timeframe, warmup_limit)
+    logger.info("Live sim 啟動：symbol=%s timeframe=%s warmup=%d", symbol, timeframe, warmup_limit)
 
     raw_df = _fetch_recent_bars(exchange, symbol, timeframe, warmup_limit, timeframe_ms)
     if len(raw_df) < warmup_bars:
@@ -299,8 +344,14 @@ def main() -> None:
     )
 
     # Prime with the latest closed bar to seed pending signals and equity history
-    _process_batch(df, [df.index[-1]], [long_engine, short_engine],
-                   trades_stream_path, equity_stream_path)
+    _process_batch(
+        df,
+        [df.index[-1]],
+        [long_engine, short_engine],
+        trades_stream_path,
+        equity_stream_path,
+        position_events_path,
+    )
 
     last_ts = df.index[-1]
 
@@ -310,7 +361,7 @@ def main() -> None:
             try:
                 new_df = _fetch_new_bars(exchange, symbol, timeframe, last_ts, timeframe_ms, now_ms)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("fetch_ohlcv failed: %s", exc)
+                logger.warning("fetch_ohlcv 失敗：%s", exc)
                 time.sleep(args.poll_seconds)
                 continue
             if new_df.empty:
@@ -321,13 +372,19 @@ def main() -> None:
             df = prepare_indicators(raw_df, params)
 
             _append_klines_csv(kline_path, new_df, write_header=False)
-            _process_batch(df, list(new_df.index), [long_engine, short_engine],
-                           trades_stream_path, equity_stream_path)
+            _process_batch(
+                df,
+                list(new_df.index),
+                [long_engine, short_engine],
+                trades_stream_path,
+                equity_stream_path,
+                position_events_path,
+            )
 
             last_ts = df.index[-1]
             time.sleep(args.poll_seconds)
     except KeyboardInterrupt:
-        logger.info("Live sim stopped by user")
+        logger.info("Live sim 已由使用者中止")
 
     last_bar = Bar.from_row(df.index[-1], df.iloc[-1])
     if cfg.force_close_at_end:
@@ -342,7 +399,7 @@ def main() -> None:
     _write_result(short_result, cfg, run_dir / "short")
     _write_result(combined, cfg, run_dir / "combined")
 
-    logger.info("Live sim outputs saved: %s", run_dir)
+    logger.info("Live sim 輸出已保存：%s", run_dir)
 
 
 # --------------------------------------------------------------------------- #
@@ -568,6 +625,18 @@ def _append_trades_csv(path: Path, trades: Iterable[Trade]) -> None:
         writer.writerows(rows)
 
 
+def _append_position_events_csv(path: Path, events: Iterable[PositionEvent]) -> None:
+    rows = [_event_to_row(e) for e in events]
+    if not rows:
+        return
+    write_header = not path.exists()
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
 def _append_equity_csv(path: Path, account: Account) -> None:
     if not account.equity_history:
         return
@@ -582,6 +651,12 @@ def _append_equity_csv(path: Path, account: Account) -> None:
             "account": account.name,
             "equity": equity,
         })
+
+
+def _last_stop_price(trade: Trade) -> float | None:
+    if not trade.stop_history:
+        return None
+    return float(trade.stop_history[-1][1])
 
 
 def _trade_to_row(trade: Trade) -> dict[str, float | str | None]:
@@ -608,11 +683,25 @@ def _trade_to_row(trade: Trade) -> dict[str, float | str | None]:
         "entry_fee": trade.entry_fee,
         "exit_fee": trade.exit_fee,
         "holding_minutes": trade.holding_duration.total_seconds() / 60.0,
+        "position_id": trade.position_id,
         "entry_notional": entry_notional,
         "initial_stop": initial_stop,
         "stop_distance": stop_distance,
         "risk_usdt_no_fee": risk_usdt_no_fee,
         "position_value_per_1u": position_value_per_1u,
+    }
+
+
+def _event_to_row(event: PositionEvent) -> dict[str, float | str | None]:
+    return {
+        "timestamp": event.timestamp.isoformat(),
+        "position_id": event.position_id,
+        "direction": event.direction.value,
+        "event": event.event,
+        "price": event.price,
+        "quantity": event.quantity,
+        "reason": event.reason,
+        "stop_price": event.stop_price,
     }
 
 
@@ -622,13 +711,18 @@ def _process_batch(
     engines: list[LiveEngine],
     trades_stream_path: Path,
     equity_stream_path: Path,
+    position_events_path: Path,
 ) -> None:
     for ts in timestamps:
         bar_index = df.index.get_loc(ts)
         closed_trades: list[Trade] = []
+        events: list[PositionEvent] = []
         for engine in engines:
-            closed_trades.extend(engine.process_bar(df, bar_index))
+            result = engine.process_bar(df, bar_index)
+            closed_trades.extend(result.closed_trades)
+            events.extend(result.events)
         _append_trades_csv(trades_stream_path, closed_trades)
+        _append_position_events_csv(position_events_path, events)
         for engine in engines:
             _append_equity_csv(equity_stream_path, engine.account)
 
