@@ -8,8 +8,8 @@ data:
 
 period:
   in_sample:
-    start: 2023-03-01
-    end:   2023-04-01
+    start: 2024-01-01
+    end:   2024-02-01
   out_of_sample:
     start: 2025-01-01
     end:   null   # null = 用到資料最後一根
@@ -63,7 +63,7 @@ strategy:
 
     #   bollinger = Bollinger band 跟蹤（原版）
     #   r_ladder  = R 倍數階梯：peak 跨 (N+0.8)R 鎖到 (N+0.5)R；異常 R 時倍數×2
-    stage3_mode: bollinger              # bollinger | r_ladder
+    stage3_mode: r_ladder              # bollinger | r_ladder
 
     # bollinger mode 參數
     bollinger_period:           20
