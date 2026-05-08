@@ -43,7 +43,7 @@ from src.utils.validation import validate_ohlc  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
-EventType = Literal["ENTRY", "EXIT"]
+EventType = Literal["ENTRY", "EXIT", "STOP_UPDATE"]
 
 
 @dataclass(frozen=True)
@@ -220,6 +220,16 @@ class LiveEngine:
             if new_stop is not None:
                 old_stop = pos.stop_price
                 self.account.update_stop_by_id(pid, new_stop, timestamp=ts)
+                events.append(PositionEvent(
+                    timestamp=ts,
+                    position_id=pid,
+                    direction=pos.direction,
+                    event="STOP_UPDATE",
+                    price=float(new_stop),
+                    quantity=pos.quantity,
+                    reason=f"stage={controller.stage}",
+                    stop_price=float(new_stop),
+                ))
                 logger.debug(
                     "[%s] RATCHET %s pid=%d stop %.4f -> %.4f (stage=%d)",
                     self.name,
