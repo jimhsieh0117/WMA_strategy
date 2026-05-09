@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
+import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Literal
 
@@ -41,6 +44,19 @@ from src.utils.types import Direction  # noqa: E402
 from src.utils.validation import validate_ohlc  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+# 過濾未收盤 K 線時的安全 buffer（毫秒），抵消本地鐘相對 binance 的偏差
+SAFE_BUFFER_MS = 1500
+
+# 連續 fetch 失敗多少次後 raise（避免 binance 維護期間無限重試而沒人發現）
+MAX_CONSECUTIVE_FAILURES = 30
+
+# 指數 backoff 上限（秒）
+MAX_BACKOFF_SECONDS = 300
+
+# state.json schema 版本
+STATE_SCHEMA_VERSION = 1
 
 
 EventType = Literal["ENTRY", "EXIT", "STOP_UPDATE"]
@@ -279,6 +295,11 @@ def main() -> None:
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--poll-seconds", type=int, default=15)
     parser.add_argument("--warmup-extra", type=int, default=20)
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="run_tag 或 run_dir 路徑；指定後自動還原 state.json + klines.csv 繼續跑",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -288,19 +309,10 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     base_dir = Path("live_sim")
     data_dir = base_dir / "data"
     results_root = base_dir / "results"
-    run_tag = f"{cfg.symbol}_{cfg.timeframe}_live_{run_id}"
-    run_dir = results_root / run_tag
-    run_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-
-    kline_path = data_dir / f"{run_tag}_klines.csv"
-    trades_stream_path = run_dir / "trades_live.csv"
-    equity_stream_path = run_dir / "equity_curve_live.csv"
-    position_events_path = run_dir / "position_events.csv"
 
     exchange = _build_exchange()
     symbol = _resolve_symbol(cfg.symbol, exchange)
@@ -311,74 +323,182 @@ def main() -> None:
     warmup_bars = params.warmup_bars
     warmup_limit = warmup_bars + max(args.warmup_extra, 0)
 
-    logger.info("Live sim 啟動：symbol=%s timeframe=%s warmup=%d", symbol, timeframe, warmup_limit)
-
-    raw_df = _fetch_recent_bars(exchange, symbol, timeframe, warmup_limit, timeframe_ms)
-    if len(raw_df) < warmup_bars:
-        raise DataIntegrityError(
-            f"warmup bars insufficient: need >= {warmup_bars}, got {len(raw_df)}"
-        )
-    validate_ohlc(raw_df, require_volume=True)
-    _append_klines_csv(kline_path, raw_df, write_header=True)
-
-    df = prepare_indicators(raw_df, params)
-
     broker = BrokerSimulator(BrokerConfig(
         taker_fee_rate=cfg.taker_fee_rate,
         maker_fee_rate=cfg.maker_fee_rate,
         slippage_pct=cfg.slippage_pct,
     ))
-
     engine_cfg = EngineConfig(
         sizing_mode=cfg.sizing_mode,  # type: ignore[arg-type]
         position_size_pct=cfg.position_size_pct,
         risk_per_trade_usdt=cfg.risk_per_trade_usdt,
         allow_pyramiding=cfg.allow_pyramiding,
-        leverage_cap=1e9,
+        leverage_cap=cfg.leverage_cap,
         force_close_at_end=cfg.force_close_at_end,
     )
 
-    long_engine = LiveEngine(
-        name="long",
-        strategy=LongTrendStrategy(params),
-        account=Account(cfg.initial_capital, name=f"long_{cfg.timeframe}_live"),
-        broker=broker,
-        config=engine_cfg,
-    )
-    short_engine = LiveEngine(
-        name="short",
-        strategy=ShortTrendStrategy(params),
-        account=Account(cfg.initial_capital, name=f"short_{cfg.timeframe}_live"),
-        broker=broker,
-        config=engine_cfg,
-    )
+    if args.resume:
+        run_tag, run_dir, kline_path, state_path = _resolve_resume_paths(
+            args.resume, results_root, data_dir
+        )
+        logger.info("Live sim 還原：run_tag=%s", run_tag)
 
-    # Prime with the latest closed bar to seed pending signals and equity history
-    _process_batch(
-        df,
-        [df.index[-1]],
-        [long_engine, short_engine],
-        trades_stream_path,
-        equity_stream_path,
-        position_events_path,
-    )
+        raw_df = _load_klines_csv(kline_path)
+        validate_ohlc(raw_df, require_volume=True)
+        _assert_continuous(raw_df, timeframe_ms, where="resumed-csv")
 
-    last_ts = df.index[-1]
+        # 補拉斷線期間遺漏的 K（resume 後 last_ts 到 now 之間可能有缺）
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if int(state.get("version", 0)) != STATE_SCHEMA_VERSION:
+            raise DataIntegrityError(
+                f"state.json schema 不相容：need {STATE_SCHEMA_VERSION}, "
+                f"got {state.get('version')}"
+            )
+        last_ts = pd.Timestamp(state["last_ts"])
+        now_ms = exchange.milliseconds()
+        catchup = _fetch_new_bars(
+            exchange, symbol, timeframe, last_ts, timeframe_ms, now_ms
+        )
+        if not catchup.empty:
+            logger.info("補拉 %d 根斷線期間的 K 線", len(catchup))
+            raw_df = _merge_new_bars(raw_df, catchup)
+            _assert_continuous(raw_df, timeframe_ms, where="resumed-merged")
+            _append_klines_csv(kline_path, catchup, write_header=False)
+
+        df = prepare_indicators(raw_df, params)
+
+        long_engine = _restore_engine(
+            name="long",
+            state=state["long"],
+            strategy=LongTrendStrategy(params),
+            broker=broker,
+            config=engine_cfg,
+            df=df,
+        )
+        short_engine = _restore_engine(
+            name="short",
+            state=state["short"],
+            strategy=ShortTrendStrategy(params),
+            broker=broker,
+            config=engine_cfg,
+            df=df,
+        )
+
+        trades_stream_path = run_dir / "trades_live.csv"
+        equity_stream_path = run_dir / "equity_curve_live.csv"
+        position_events_path = run_dir / "position_events.csv"
+
+        # 處理斷線期間補拉到的 K（不重新 prime 最後一根，那根已在 state 裡處理過）
+        if not catchup.empty:
+            _process_batch(
+                df, list(catchup.index),
+                [long_engine, short_engine],
+                trades_stream_path, equity_stream_path, position_events_path,
+            )
+        last_ts = df.index[-1]
+    else:
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        run_tag = f"{cfg.symbol}_{cfg.timeframe}_live_{run_id}"
+        run_dir = results_root / run_tag
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        kline_path = data_dir / f"{run_tag}_klines.csv"
+        trades_stream_path = run_dir / "trades_live.csv"
+        equity_stream_path = run_dir / "equity_curve_live.csv"
+        position_events_path = run_dir / "position_events.csv"
+        state_path = run_dir / "state.json"
+
+        logger.info("Live sim 啟動：symbol=%s timeframe=%s warmup=%d",
+                    symbol, timeframe, warmup_limit)
+
+        raw_df = _fetch_recent_bars(
+            exchange, symbol, timeframe, warmup_limit, timeframe_ms
+        )
+        if len(raw_df) < warmup_bars:
+            raise DataIntegrityError(
+                f"warmup bars insufficient: need >= {warmup_bars}, got {len(raw_df)}"
+            )
+        validate_ohlc(raw_df, require_volume=True)
+        _append_klines_csv(kline_path, raw_df, write_header=True)
+
+        df = prepare_indicators(raw_df, params)
+
+        long_engine = LiveEngine(
+            name="long",
+            strategy=LongTrendStrategy(params),
+            account=Account(cfg.initial_capital, name=f"long_{cfg.timeframe}_live"),
+            broker=broker,
+            config=engine_cfg,
+        )
+        short_engine = LiveEngine(
+            name="short",
+            strategy=ShortTrendStrategy(params),
+            account=Account(cfg.initial_capital, name=f"short_{cfg.timeframe}_live"),
+            broker=broker,
+            config=engine_cfg,
+        )
+
+        # Prime with the latest closed bar to seed pending signals and equity history
+        _process_batch(
+            df, [df.index[-1]],
+            [long_engine, short_engine],
+            trades_stream_path, equity_stream_path, position_events_path,
+        )
+        last_ts = df.index[-1]
+        _persist_state(
+            state_path,
+            run_tag=run_tag, last_ts=last_ts,
+            long_engine=long_engine, short_engine=short_engine,
+        )
+    consecutive_failures = 0
 
     try:
         while True:
             now_ms = exchange.milliseconds()
             try:
                 new_df = _fetch_new_bars(exchange, symbol, timeframe, last_ts, timeframe_ms, now_ms)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("fetch_ohlcv 失敗：%s", exc)
-                time.sleep(args.poll_seconds)
+            except (
+                ccxt.NetworkError,
+                ccxt.ExchangeNotAvailable,
+                ccxt.RequestTimeout,
+            ) as exc:
+                consecutive_failures += 1
+                if consecutive_failures > MAX_CONSECUTIVE_FAILURES:
+                    raise DataIntegrityError(
+                        f"連續 {consecutive_failures} 次 fetch 失敗，放棄"
+                    ) from exc
+                delay = min(
+                    args.poll_seconds * (2 ** min(consecutive_failures, 8)),
+                    MAX_BACKOFF_SECONDS,
+                )
+                logger.warning(
+                    "network 錯誤 (%d/%d)：%s — sleep %ds 後重試",
+                    consecutive_failures, MAX_CONSECUTIVE_FAILURES, exc, delay,
+                )
+                time.sleep(delay)
                 continue
+            except ccxt.RateLimitExceeded as exc:
+                consecutive_failures += 1
+                logger.warning("rate limit hit：%s — sleep 60s", exc)
+                time.sleep(60)
+                continue
+            except (ccxt.AuthenticationError, ccxt.PermissionDenied):
+                # 設定錯誤類，fail-fast
+                logger.exception("auth / permission 錯誤，停止 live sim")
+                raise
+            except DataIntegrityError:
+                # OHLCV 連續性 / 分頁失敗 — 不假裝沒事
+                logger.exception("OHLCV 完整性檢查失敗，停止 live sim")
+                raise
+
+            consecutive_failures = 0
             if new_df.empty:
                 time.sleep(args.poll_seconds)
                 continue
 
             raw_df = _merge_new_bars(raw_df, new_df)
+            _assert_continuous(raw_df, timeframe_ms, where="merged")
             df = prepare_indicators(raw_df, params)
 
             _append_klines_csv(kline_path, new_df, write_header=False)
@@ -392,6 +512,13 @@ def main() -> None:
             )
 
             last_ts = df.index[-1]
+            _persist_state(
+                state_path,
+                run_tag=run_tag,
+                last_ts=last_ts,
+                long_engine=long_engine,
+                short_engine=short_engine,
+            )
             time.sleep(args.poll_seconds)
     except KeyboardInterrupt:
         logger.info("Live sim 已由使用者中止")
@@ -454,12 +581,14 @@ def _fetch_recent_bars(
     limit: int,
     timeframe_ms: int,
 ) -> pd.DataFrame:
-    rows = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    # +1：binance 通常會回包含當前未收盤 K 的最新 limit 根，過濾後容易少 1 根
+    rows = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit + 1)
     df = _ohlcv_to_df(rows)
     now_ms = exchange.milliseconds()
     df = _filter_closed_bars(df, timeframe_ms, now_ms)
     if df.empty:
         raise DataIntegrityError("no closed bars returned for warmup")
+    _assert_continuous(df, timeframe_ms, where="warmup")
     return df
 
 
@@ -470,17 +599,75 @@ def _fetch_new_bars(
     last_ts: pd.Timestamp,
     timeframe_ms: int,
     now_ms: int,
+    *,
+    page_limit: int = 500,
 ) -> pd.DataFrame:
-    since_ms = int(last_ts.value // 1_000_000) - timeframe_ms * 2
-    rows = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since_ms, limit=500)
-    df = _ohlcv_to_df(rows)
+    """拉 ``last_ts`` 之後的所有已收盤 K，必要時自動分批 paginate。"""
+    last_ms = _ts_to_unix_ms(last_ts)
+    # 從 last_ts−2 根起拉，避免錯過剛剛邊界 K（重複的會在合併時丟掉）
+    cursor_ms = last_ms - timeframe_ms * 2
+
+    chunks: list[pd.DataFrame] = []
+    # 防呆：理論上 (now_ms - last_ms)/timeframe_ms 不會超過 page_limit*N，N 取一個夠大值
+    max_pages = 50
+    for _ in range(max_pages):
+        rows = exchange.fetch_ohlcv(
+            symbol, timeframe=timeframe, since=cursor_ms, limit=page_limit
+        )
+        chunk = _ohlcv_to_df(rows)
+        if chunk.empty:
+            break
+        chunks.append(chunk)
+        last_chunk_ms = _ts_to_unix_ms(chunk.index[-1])
+        # 抓到的最後一根已逼近 now → 結束分頁
+        if last_chunk_ms + timeframe_ms >= now_ms:
+            break
+        # 否則從最後一根的下一根繼續
+        next_cursor = last_chunk_ms + timeframe_ms
+        if next_cursor <= cursor_ms:
+            # 沒有前進，避免死迴圈
+            break
+        cursor_ms = next_cursor
+    else:
+        raise DataIntegrityError(
+            f"_fetch_new_bars: paginate exceeded {max_pages} pages "
+            f"(last_ts={last_ts}, now_ms={now_ms})"
+        )
+
+    if not chunks:
+        return _ohlcv_to_df([])
+
+    df = pd.concat(chunks)
+    df = df[~df.index.duplicated(keep="last")].sort_index()
     df = _filter_closed_bars(df, timeframe_ms, now_ms)
     if df.empty:
         return df
     df = df[df.index > last_ts]
-    if not df.empty:
-        validate_ohlc(df, require_volume=True)
+    if df.empty:
+        return df
+    validate_ohlc(df, require_volume=True)
+    _assert_continuous(df, timeframe_ms, where="incremental")
     return df
+
+
+def _assert_continuous(
+    df: pd.DataFrame, timeframe_ms: int, *, where: str
+) -> None:
+    """檢查 OHLCV 時間序列連續、無缺口、無重複。失敗即 raise（CLAUDE.md §5）。"""
+    if len(df) < 2:
+        return
+    expected = pd.Timedelta(milliseconds=timeframe_ms)
+    diffs = df.index[1:] - df.index[:-1]
+    if not (diffs == expected).all():
+        bad = [
+            (df.index[i], df.index[i + 1], diffs[i])
+            for i in range(len(diffs))
+            if diffs[i] != expected
+        ]
+        raise DataIntegrityError(
+            f"OHLCV not continuous ({where}): expected step={expected}, "
+            f"violations (first 5)={bad[:5]}"
+        )
 
 
 def _ohlcv_to_df(rows: list[list[float]]) -> pd.DataFrame:
@@ -499,11 +686,31 @@ def _ohlcv_to_df(rows: list[list[float]]) -> pd.DataFrame:
     return df
 
 
+def _index_to_unix_ms(idx: pd.Index) -> "pd.Index":
+    """DatetimeIndex → unix milliseconds（int64）。
+
+    pandas 2.x 的 ``DatetimeIndex`` 預設 storage 為 ``datetime64[us]``，直接
+    ``astype('int64')`` 取到的會是 microseconds 而非 nanoseconds。先 ``as_unit('ns')``
+    強制統一到 ns，再 ``// 1_000_000`` 才是正確的毫秒。
+    """
+    return idx.as_unit("ns").asi8 // 1_000_000  # type: ignore[attr-defined]
+
+
+def _ts_to_unix_ms(ts: pd.Timestamp) -> int:
+    """單一 Timestamp → unix milliseconds（int）。同樣經 ``as_unit('ns')`` 統一單位。"""
+    return int(ts.as_unit("ns").value // 1_000_000)
+
+
 def _filter_closed_bars(df: pd.DataFrame, timeframe_ms: int, now_ms: int) -> pd.DataFrame:
+    """只保留「肯定已收盤」的 K：``open_ts + timeframe + SAFE_BUFFER ≤ now_ms``。
+
+    ``SAFE_BUFFER_MS`` 用來抵消本地鐘相對 binance server 的偏差（NTP 漂移），
+    避免把 server 端尚未收盤的 K 誤當成已收盤而吃進策略。
+    """
     if df.empty:
         return df
-    ts_ms = df.index.view("int64") // 1_000_000
-    mask = ts_ms + timeframe_ms <= now_ms
+    ts_ms = _index_to_unix_ms(df.index)
+    mask = ts_ms + timeframe_ms + SAFE_BUFFER_MS <= now_ms
     return df.loc[mask]
 
 
@@ -661,6 +868,169 @@ def _append_equity_csv(path: Path, account: Account) -> None:
             "account": account.name,
             "equity": equity,
         })
+
+
+# --------------------------------------------------------------------------- #
+# State persistence — crash 後可用 --resume 還原
+# --------------------------------------------------------------------------- #
+
+def _resolve_resume_paths(
+    resume_arg: str, results_root: Path, data_dir: Path
+) -> tuple[str, Path, Path, Path]:
+    """``--resume`` 參數可以是 run_tag 或 run_dir 路徑；回 (run_tag, run_dir, kline_path, state_path)。"""
+    candidate = Path(resume_arg)
+    if candidate.is_dir():
+        run_dir = candidate.resolve()
+    else:
+        run_dir = (results_root / resume_arg).resolve()
+    if not run_dir.is_dir():
+        raise ConfigError(f"--resume: run dir 不存在：{run_dir}")
+    run_tag = run_dir.name
+    state_path = run_dir / "state.json"
+    if not state_path.is_file():
+        raise ConfigError(f"--resume: 找不到 state.json：{state_path}")
+    kline_path = data_dir / f"{run_tag}_klines.csv"
+    if not kline_path.is_file():
+        raise ConfigError(f"--resume: 找不到 klines.csv：{kline_path}")
+    return run_tag, run_dir, kline_path, state_path
+
+
+def _load_klines_csv(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path, parse_dates=["timestamp"])
+    df = df.set_index("timestamp").sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    df.index.name = "timestamp"
+    return df
+
+
+def _serialize_pending_signal(sig: EntrySignal | None) -> dict | None:
+    if sig is None:
+        return None
+    return {
+        "direction": sig.direction.value,
+        "timestamp": sig.timestamp.isoformat(),
+        "initial_stop": float(sig.initial_stop),
+        "reason": sig.reason,
+    }
+
+
+def _deserialize_pending_signal(
+    data: dict | None, df: pd.DataFrame
+) -> EntrySignal | None:
+    if data is None:
+        return None
+    ts = pd.Timestamp(data["timestamp"])
+    if ts not in df.index:
+        # 該 K 已不在 df（不該發生：raw_df 從 csv 還原應包含），保險起見 raise
+        raise DataIntegrityError(
+            f"resume: pending_signal timestamp {ts} not found in raw_df index"
+        )
+    bar_index = int(df.index.get_loc(ts))
+    return EntrySignal(
+        direction=Direction(data["direction"]),
+        bar_index=bar_index,
+        timestamp=ts,
+        initial_stop=float(data["initial_stop"]),
+        reason=str(data["reason"]),
+    )
+
+
+def _serialize_engine(engine: "LiveEngine") -> dict:
+    return {
+        "name": engine.name,
+        "account": engine.account.snapshot_state(),
+        "pending_signal": _serialize_pending_signal(engine.pending_signal),
+        "trailings": {
+            str(pid): ctrl.snapshot_runtime()
+            for pid, ctrl in engine.trailings.items()
+        },
+        "signals_emitted": engine.signals_emitted,
+        "signals_filled": engine.signals_filled,
+        "signals_unfilled": engine.signals_unfilled,
+        "signals_skipped_pending": engine.signals_skipped_pending,
+        "bars_processed": engine.bars_processed,
+    }
+
+
+def _persist_state(
+    path: Path,
+    *,
+    run_tag: str,
+    last_ts: pd.Timestamp,
+    long_engine: "LiveEngine",
+    short_engine: "LiveEngine",
+) -> None:
+    """以 atomic write（write tmp + fsync + rename）落地 state.json，避免 crash 留半行。"""
+    payload = {
+        "version": STATE_SCHEMA_VERSION,
+        "run_tag": run_tag,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "last_ts": last_ts.isoformat(),
+        "long": _serialize_engine(long_engine),
+        "short": _serialize_engine(short_engine),
+    }
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        prefix=".state-", suffix=".json", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        # 殘留 tmp 不致命，但別讓它累積
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _restore_engine(
+    *,
+    name: str,
+    state: dict,
+    strategy: BaseTrendStrategy,
+    broker: BrokerSimulator,
+    config: EngineConfig,
+    df: pd.DataFrame,
+) -> "LiveEngine":
+    account = Account.restore_state(state["account"])
+    engine = LiveEngine(
+        name=name,
+        strategy=strategy,
+        account=account,
+        broker=broker,
+        config=config,
+    )
+    engine.pending_signal = _deserialize_pending_signal(
+        state.get("pending_signal"), df
+    )
+    engine.signals_emitted = int(state["signals_emitted"])
+    engine.signals_filled = int(state["signals_filled"])
+    engine.signals_unfilled = int(state["signals_unfilled"])
+    engine.signals_skipped_pending = int(state["signals_skipped_pending"])
+    engine.bars_processed = int(state["bars_processed"])
+
+    # Rebuild trailing controllers：每筆持倉重建一個 controller，再還原 runtime stage/peak
+    trailing_states: dict[str, dict] = state.get("trailings", {})
+    for pid, pos in account.positions.items():
+        ctrl = TrailingStopController(
+            position=pos,
+            params=strategy.params.trailing,
+            broker_config=broker.config,
+        )
+        runtime = trailing_states.get(str(pid))
+        if runtime is None:
+            logger.warning(
+                "[%s] resume: trailing runtime for pid=%d 缺失，以 stage=1 重建",
+                name, pid,
+            )
+        else:
+            ctrl.restore_runtime(runtime)
+        engine.trailings[pid] = ctrl
+    return engine
 
 
 def _last_stop_price(trade: Trade) -> float | None:

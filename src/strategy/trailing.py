@@ -155,6 +155,32 @@ class TrailingStopController:
         return list(self._transitions)
 
     # ----------------------------------------------------------------------- #
+    # 序列化（給 live_sim crash-resume 用；持倉資訊由外部 Position 還原後重建）
+    # ----------------------------------------------------------------------- #
+
+    def snapshot_runtime(self) -> dict:
+        """匯出 runtime 狀態（stage / peak_progress_r）。
+
+        靜態欄位（entry_price / R / triggers）會由 constructor 從 Position 與 params
+        重新推導，故無須序列化。
+        """
+        return {
+            "stage": int(self.stage),
+            "peak_progress_r": float(self.peak_progress_r),
+        }
+
+    def restore_runtime(self, snapshot: dict) -> None:
+        """以 ``snapshot_runtime`` 的輸出還原 stage 與 peak（不補回 transitions log）。"""
+        stage = int(snapshot["stage"])
+        if stage not in (1, 2, 3):
+            raise ValueError(f"invalid stage in snapshot: {stage}")
+        peak = float(snapshot["peak_progress_r"])
+        if peak < 0:
+            raise ValueError(f"peak_progress_r must be >= 0, got {peak}")
+        self.stage = stage
+        self.peak_progress_r = peak
+
+    # ----------------------------------------------------------------------- #
     # 內部：階段邏輯
     # ----------------------------------------------------------------------- #
 

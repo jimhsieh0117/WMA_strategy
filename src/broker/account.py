@@ -310,3 +310,42 @@ class Account:
     def snapshot_equity(self, mark_price: float, timestamp: pd.Timestamp) -> None:
         """記錄當下 equity 至歷史，供日後績效計算使用。"""
         self._equity_history.append((timestamp, self.equity(mark_price)))
+
+    # ----------------------------------------------------------------------- #
+    # 序列化（給 live_sim crash-resume 用，不影響既有邏輯）
+    # ----------------------------------------------------------------------- #
+
+    def snapshot_state(self) -> dict:
+        """匯出完整內部狀態，可用 ``restore_state`` 還原。"""
+        return {
+            "name": self._name,
+            "initial_capital": self._initial_capital,
+            "cash": self._cash,
+            "next_position_id": self._next_position_id,
+            "positions": {
+                pid: pos.to_dict() for pid, pos in self._positions.items()
+            },
+            "trade_log": [t.to_dict() for t in self._trade_log],
+            "equity_history": [
+                (ts.isoformat(), float(v)) for ts, v in self._equity_history
+            ],
+        }
+
+    @classmethod
+    def restore_state(cls, snapshot: dict) -> "Account":
+        """從 ``snapshot_state`` 的輸出還原 Account（不重新驗 invariants，假設快照可信）。"""
+        acct = cls(
+            initial_capital=float(snapshot["initial_capital"]),
+            name=str(snapshot["name"]),
+        )
+        acct._cash = float(snapshot["cash"])
+        acct._next_position_id = int(snapshot["next_position_id"])
+        acct._positions = {
+            int(pid): Position.from_dict(d)
+            for pid, d in snapshot["positions"].items()
+        }
+        acct._trade_log = [Trade.from_dict(d) for d in snapshot["trade_log"]]
+        acct._equity_history = [
+            (pd.Timestamp(ts), float(v)) for ts, v in snapshot["equity_history"]
+        ]
+        return acct

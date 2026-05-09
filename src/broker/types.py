@@ -150,6 +150,33 @@ class Position:
         """以 ``mark_price`` 計算未實現損益（含方向）。"""
         return self.direction.sign * self.quantity * (mark_price - self.entry_price)
 
+    # ---- 序列化（給 live_sim resume 用，不影響既有邏輯）----
+
+    def to_dict(self) -> dict:
+        return {
+            "direction": self.direction.value,
+            "quantity": self.quantity,
+            "entry_price": self.entry_price,
+            "entry_timestamp": self.entry_timestamp.isoformat(),
+            "stop_price": self.stop_price,
+            "entry_fee": self.entry_fee,
+            "stop_history": [(ts.isoformat(), float(v)) for ts, v in self.stop_history],
+            "position_id": self.position_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Position":
+        return cls(
+            direction=Direction(data["direction"]),
+            quantity=float(data["quantity"]),
+            entry_price=float(data["entry_price"]),
+            entry_timestamp=pd.Timestamp(data["entry_timestamp"]),
+            stop_price=float(data["stop_price"]),
+            entry_fee=float(data["entry_fee"]),
+            stop_history=[(pd.Timestamp(ts), float(v)) for ts, v in data["stop_history"]],
+            position_id=int(data["position_id"]),
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Trade（frozen，平倉後永久紀錄）
@@ -181,3 +208,44 @@ class Trade:
     @property
     def holding_duration(self) -> pd.Timedelta:
         return self.exit_timestamp - self.entry_timestamp
+
+    # ---- 序列化（給 live_sim resume 用，不影響既有邏輯）----
+
+    def to_dict(self) -> dict:
+        return {
+            "direction": self.direction.value,
+            "quantity": self.quantity,
+            "entry_price": self.entry_price,
+            "entry_timestamp": self.entry_timestamp.isoformat(),
+            "exit_price": self.exit_price,
+            "exit_timestamp": self.exit_timestamp.isoformat(),
+            "entry_fee": self.entry_fee,
+            "exit_fee": self.exit_fee,
+            "gross_pnl": self.gross_pnl,
+            "net_pnl": self.net_pnl,
+            "return_pct": self.return_pct,
+            "exit_reason": self.exit_reason,
+            "stop_history": [(ts.isoformat(), float(v)) for ts, v in self.stop_history],
+            "position_id": self.position_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Trade":
+        return cls(
+            direction=Direction(data["direction"]),
+            quantity=float(data["quantity"]),
+            entry_price=float(data["entry_price"]),
+            entry_timestamp=pd.Timestamp(data["entry_timestamp"]),
+            exit_price=float(data["exit_price"]),
+            exit_timestamp=pd.Timestamp(data["exit_timestamp"]),
+            entry_fee=float(data["entry_fee"]),
+            exit_fee=float(data["exit_fee"]),
+            gross_pnl=float(data["gross_pnl"]),
+            net_pnl=float(data["net_pnl"]),
+            return_pct=float(data["return_pct"]),
+            exit_reason=str(data["exit_reason"]),
+            stop_history=tuple(
+                (pd.Timestamp(ts), float(v)) for ts, v in data["stop_history"]
+            ),
+            position_id=int(data["position_id"]),
+        )
