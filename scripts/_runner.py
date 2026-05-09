@@ -32,7 +32,7 @@ from src.reporting.plotter import plot_drawdown, plot_equity_curves
 from src.strategy.base import BaseTrendStrategy, prepare_indicators
 from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
-from src.strategy.types import StrategyParams, TrailingStopParams
+from src.strategy.types import SignalFilterParams, StrategyParams, TrailingStopParams
 from src.utils.config import FullConfig, PeriodSpec
 
 logger = logging.getLogger(__name__)
@@ -104,11 +104,18 @@ def run_single_strategy(
         r_ladder_trigger_offset=cfg.trailing.r_ladder_trigger_offset,
         r_ladder_abnormal_trigger_offset=cfg.trailing.r_ladder_abnormal_trigger_offset,
     )
+    signal_filter = SignalFilterParams(
+        mode=cfg.signal_filter.mode,  # type: ignore[arg-type]
+        window=cfg.signal_filter.window,
+        threshold=cfg.signal_filter.threshold,
+        source=cfg.signal_filter.source,
+    )
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
         wma_slow=cfg.wma_slow,
         entry_source=cfg.entry_source,  # type: ignore[arg-type]
         trailing=trailing,
+        signal_filter=signal_filter,
     )
     augmented = prepare_indicators(df, params)
 

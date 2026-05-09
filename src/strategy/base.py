@@ -75,6 +75,55 @@ def prepare_indicators(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame
     return out
 
 
+def passes_signal_filter(
+    df: pd.DataFrame,
+    bar_index: int,
+    direction: Direction,
+    params: StrategyParams,
+) -> bool:
+    """進場前 N 根 K 實體比例濾網。
+
+    多單：要求 bull_metric / total_metric ≥ threshold
+    空單：要求 bull_metric / total_metric ≤ (1 − threshold)
+
+    metric 由 ``params.signal_filter.mode`` 決定：
+        body_sum    → |body|
+        body_sq_sum → body²
+    source 由 ``params.signal_filter.source`` 決定（raw / ha）。
+    Window 包含訊號 K 自身（bar_index − window + 1 .. bar_index）。
+    """
+    sf = params.signal_filter
+    if sf.mode == "off":
+        return True
+    n = sf.window
+    start = bar_index - n + 1
+    if start < 0:
+        return False  # 暖機不足，視同未通過
+
+    if sf.source == "ha":
+        opens = df["ha_open"].iloc[start:bar_index + 1].to_numpy()
+        closes = df["ha_close"].iloc[start:bar_index + 1].to_numpy()
+    else:
+        opens = df["open"].iloc[start:bar_index + 1].to_numpy()
+        closes = df["close"].iloc[start:bar_index + 1].to_numpy()
+
+    bodies = closes - opens
+    if sf.mode == "body_sum":
+        bull_metric = float(bodies[bodies > 0].sum())
+        bear_metric = float(-bodies[bodies < 0].sum())
+    else:  # "body_sq_sum"
+        bull_metric = float((bodies[bodies > 0] ** 2).sum())
+        bear_metric = float((bodies[bodies < 0] ** 2).sum())
+    total = bull_metric + bear_metric
+    if total <= 0:
+        return False  # 全部 doji，視同無方向訊號
+
+    bull_ratio = bull_metric / total
+    if direction is Direction.LONG:
+        return bull_ratio >= sf.threshold
+    return bull_ratio <= (1.0 - sf.threshold)
+
+
 def assert_indicators_ready(df: pd.DataFrame) -> None:
     """確認 df 已含全部指標欄。策略執行前的防呆。"""
     missing = set(REQUIRED_INDICATOR_COLUMNS) - set(df.columns)

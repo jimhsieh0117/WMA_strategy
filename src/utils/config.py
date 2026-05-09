@@ -61,6 +61,15 @@ class TrailingConfig:
 
 
 @dataclass(frozen=True)
+class SignalFilterConfig:
+    """進場訊號濾網設定（對應 strategy.signal_filter 區塊）。"""
+    mode: str = "off"          # "off" | "body_sum" | "body_sq_sum"
+    window: int = 6
+    threshold: float = 0.60
+    source: str = "raw"        # "raw" | "ha"
+
+
+@dataclass(frozen=True)
 class FullConfig:
     """完整設定的扁平容器。"""
 
@@ -94,6 +103,9 @@ class FullConfig:
     # strategy: trailing stop
     trailing: TrailingConfig
 
+    # strategy: signal filter
+    signal_filter: SignalFilterConfig
+
     # backtest
     output_dir: Path
     show_progress: bool
@@ -107,6 +119,8 @@ _VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1H", "4H"}
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 _VALID_ENTRY_SOURCES = {"ha", "raw"}
 _VALID_SIZING_MODES = {"pct", "risk"}
+_VALID_SIGNAL_FILTER_MODES = {"off", "body_sum", "body_sq_sum"}
+_VALID_SIGNAL_FILTER_SOURCES = {"raw", "ha"}
 
 
 def load_config(path: str | Path) -> FullConfig:
@@ -206,6 +220,38 @@ def load_config(path: str | Path) -> FullConfig:
         ),
     )
 
+    # ---- strategy: signal filter ----
+    sf_raw = strategy.get("signal_filter", {}) or {}
+    # YAML 裡 'off' / 'on' 會被解析成 boolean，這裡容錯回 string
+    raw_mode = sf_raw.get("mode", "off")
+    if raw_mode is False:
+        raw_mode = "off"
+    elif raw_mode is True:
+        raw_mode = "on"  # 後面驗證會 raise，提示使用者
+    sf_mode = str(raw_mode).lower()
+    if sf_mode not in _VALID_SIGNAL_FILTER_MODES:
+        raise ConfigError(
+            f"strategy.signal_filter.mode '{sf_mode}' invalid; "
+            f"must be one of {sorted(_VALID_SIGNAL_FILTER_MODES)}"
+        )
+    sf_source = str(sf_raw.get("source", "raw")).lower()
+    if sf_source not in _VALID_SIGNAL_FILTER_SOURCES:
+        raise ConfigError(
+            f"strategy.signal_filter.source '{sf_source}' invalid; "
+            f"must be one of {sorted(_VALID_SIGNAL_FILTER_SOURCES)}"
+        )
+    sf_window = int(sf_raw.get("window", 6))
+    if sf_window < 1:
+        raise ConfigError(f"strategy.signal_filter.window must be >= 1, got {sf_window}")
+    sf_threshold = float(sf_raw.get("threshold", 0.60))
+    if not (0.0 < sf_threshold < 1.0):
+        raise ConfigError(
+            f"strategy.signal_filter.threshold must be in (0, 1), got {sf_threshold}"
+        )
+    signal_filter = SignalFilterConfig(
+        mode=sf_mode, window=sf_window, threshold=sf_threshold, source=sf_source,
+    )
+
     # ---- backtest ----
     output_dir = Path(backtest.get("output_dir", "results")).expanduser()
     show_progress = bool(backtest.get("show_progress", True))
@@ -235,6 +281,7 @@ def load_config(path: str | Path) -> FullConfig:
         wma_slow=wma_slow,
         entry_source=entry_source,
         trailing=trailing,
+        signal_filter=signal_filter,
         output_dir=output_dir,
         show_progress=show_progress,
         force_close_at_end=force_close_at_end,

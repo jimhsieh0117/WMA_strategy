@@ -8,8 +8,8 @@ data:
 
 period:
   in_sample:
-    start: 2023-01-01
-    end:   2024-12-31
+    start: 2024-01-01
+    end:   2024-02-01
   out_of_sample:
     start: 2025-01-01
     end:   null   # null = 用到資料最後一根
@@ -76,6 +76,20 @@ strategy:
     r_ladder_abnormal_step:          2.0   # abnormal 檔距（5.6 → 7.6 → 9.6 …）
     r_ladder_trigger_offset:         0.3   # trigger − stop（2.8 觸發 → 鎖 2.5）
     r_ladder_abnormal_trigger_offset: 0.6  # abnormal：5.6 觸發 → 鎖 5.0
+
+  # 進場訊號濾網（六根 K 實體比例閘門）
+  #   mode:
+  #     off          = 關閉（預設，與舊版一致）
+  #     body_sum     = 線性實體比例：陽K長度合 / 全部長度合
+  #     body_sq_sum  = 平方加權：陽K長度² 合 / 全部長度² 合（大實體影響加倍）
+  #   threshold: LONG 需 ratio ≥ threshold；SHORT 需 ratio ≤ (1 − threshold)
+  #   window: 進場前回看根數（含訊號 K 自己）
+  #   source: raw 用原始 K，ha 用 Heikin-Ashi
+  signal_filter:
+    mode: "off"
+    window: 6
+    threshold: 0.60
+    source: raw
 
 backtest:
   output_dir: results

@@ -28,7 +28,7 @@ import math
 
 import pandas as pd
 
-from src.strategy.base import BaseTrendStrategy, assert_indicators_ready
+from src.strategy.base import BaseTrendStrategy, assert_indicators_ready, passes_signal_filter
 from src.strategy.types import EntrySignal
 from src.utils.types import Direction
 
@@ -76,6 +76,10 @@ class LongTrendStrategy(BaseTrendStrategy):
 
         # 條件 2：交叉前 -2 / -3 根 close 低於當根
         if not ((c_t2 < c_t) and (c_t3 < c_t)):
+            return None
+
+        # 條件 3（可選）：進場前 N 根 K 實體比例濾網
+        if not passes_signal_filter(df, bar_index, Direction.LONG, self.params):
             return None
 
         # Stage 1 初始止損：前 N 根原始 K 線最低低點，再往下 buffer

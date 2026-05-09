@@ -21,6 +21,54 @@ from src.utils.types import Direction
 EntrySource = Literal["ha", "raw"]
 VALID_ENTRY_SOURCES: tuple[str, ...] = ("ha", "raw")
 
+# Signal filter modes
+#   off          = 不啟用
+#   body_sum     = 線性實體比例（陽K長度合 / 全部長度合）
+#   body_sq_sum  = 平方加權（陽K長度² 合 / 全部長度² 合）— 大實體影響加倍
+SignalFilterMode = Literal["off", "body_sum", "body_sq_sum"]
+VALID_SIGNAL_FILTER_MODES: tuple[str, ...] = ("off", "body_sum", "body_sq_sum")
+VALID_SIGNAL_FILTER_SOURCES: tuple[str, ...] = ("raw", "ha")
+
+
+# --------------------------------------------------------------------------- #
+# 訊號濾網（進場前 N 根 K 線實體比例閘門）
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class SignalFilterParams:
+    """進場前 N 根 K 線實體比例濾網。
+
+    對 LONG 訊號：要求 ratio ≥ threshold
+    對 SHORT 訊號：要求 ratio ≤ (1 − threshold)（對稱鏡像）
+
+    其中 ratio = bull_metric / (bull_metric + bear_metric)：
+    - body_sum: metric = body length（線性）
+    - body_sq_sum: metric = body length²（平方加權，超大 K 影響更大）
+    """
+
+    mode: SignalFilterMode = "off"
+    window: int = 6
+    threshold: float = 0.60
+    source: str = "raw"  # "raw" | "ha"
+
+    def __post_init__(self) -> None:
+        if self.mode not in VALID_SIGNAL_FILTER_MODES:
+            raise ConfigError(
+                f"signal_filter.mode must be one of {VALID_SIGNAL_FILTER_MODES}, "
+                f"got {self.mode!r}"
+            )
+        if self.source not in VALID_SIGNAL_FILTER_SOURCES:
+            raise ConfigError(
+                f"signal_filter.source must be one of {VALID_SIGNAL_FILTER_SOURCES}, "
+                f"got {self.source!r}"
+            )
+        if not isinstance(self.window, int) or isinstance(self.window, bool) or self.window < 1:
+            raise ConfigError(f"signal_filter.window must be int >= 1, got {self.window}")
+        if not (0.0 < self.threshold < 1.0):
+            raise ConfigError(
+                f"signal_filter.threshold must be in (0, 1), got {self.threshold}"
+            )
+
 
 # --------------------------------------------------------------------------- #
 # 三階段拖曳止損設定
@@ -159,6 +207,9 @@ class StrategyParams:
 
     # ---- 拖曳止損子設定 ----
     trailing: TrailingStopParams = field(default_factory=TrailingStopParams)
+
+    # ---- 進場訊號濾網（可選）----
+    signal_filter: SignalFilterParams = field(default_factory=SignalFilterParams)
 
     def __post_init__(self) -> None:
         if self.wma_fast < 1 or self.wma_slow < 1:
