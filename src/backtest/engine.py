@@ -175,7 +175,11 @@ def run_backtest(
 
         # === Step 2: 盤中止損檢查（多倉一次處理所有持倉）===
         if account.has_position():
-            closed_trades = broker.check_stops(account, bar)
+            stop_meta = {
+                pid: (ctrl.stage, ctrl.peak_progress_r)
+                for pid, ctrl in trailings.items()
+            }
+            closed_trades = broker.check_stops(account, bar, metadata_by_pid=stop_meta)
             for trade in closed_trades:
                 logger.debug(
                     "STOP %s @ %.4f net_pnl=%.4f reason=%s pid=%d",
@@ -228,12 +232,15 @@ def run_backtest(
         for pid, pos in list(account.positions.items()):
             notional = pos.quantity * last_bar.close
             fee = notional * broker.config.taker_fee_rate
+            ctrl = trailings.get(pid)
             account.close_position_by_id(
                 position_id=pid,
                 exit_price=last_bar.close,
                 exit_timestamp=last_bar.timestamp,
                 fee=fee,
                 reason="FORCE_CLOSE_END",
+                final_stage=ctrl.stage if ctrl else 1,
+                peak_progress_r=ctrl.peak_progress_r if ctrl else 0.0,
             )
             trailings.pop(pid, None)
 

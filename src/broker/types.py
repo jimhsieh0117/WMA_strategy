@@ -204,6 +204,11 @@ class Trade:
     exit_reason: str
     stop_history: tuple[tuple[pd.Timestamp, float], ...] = ()
     position_id: int = 0
+    # 平倉時 trailing controller 所處的最終 stage（1/2/3）。
+    # 預設 1 對應「從未進到 stage 2（initial swing stop 直接被打到）」。
+    final_stage: int = 1
+    # 平倉時的歷史最大有利進度（以 R 為單位）。
+    peak_progress_r: float = 0.0
 
     @property
     def holding_duration(self) -> pd.Timedelta:
@@ -227,6 +232,8 @@ class Trade:
             "exit_reason": self.exit_reason,
             "stop_history": [(ts.isoformat(), float(v)) for ts, v in self.stop_history],
             "position_id": self.position_id,
+            "final_stage": self.final_stage,
+            "peak_progress_r": self.peak_progress_r,
         }
 
     @classmethod
@@ -248,4 +255,6 @@ class Trade:
                 (pd.Timestamp(ts), float(v)) for ts, v in data["stop_history"]
             ),
             position_id=int(data["position_id"]),
+            final_stage=int(data.get("final_stage", 1)),
+            peak_progress_r=float(data.get("peak_progress_r", 0.0)),
         )

@@ -171,8 +171,19 @@ class BrokerSimulator:
     # 止損觸發檢查
     # ----------------------------------------------------------------------- #
 
-    def check_stop(self, account: Account, bar: Bar) -> Trade | None:
-        """單倉舊 API：持倉 ≤ 1 時等同舊版行為，若帳戶有 > 1 筆持倉則 raise。"""
+    def check_stop(
+        self,
+        account: Account,
+        bar: Bar,
+        *,
+        metadata_by_pid: dict[int, tuple[int, float]] | None = None,
+    ) -> Trade | None:
+        """單倉舊 API：持倉 ≤ 1 時等同舊版行為，若帳戶有 > 1 筆持倉則 raise。
+
+        ``metadata_by_pid``：``{pid: (final_stage, peak_progress_r)}``，由 engine 從
+        trailing controllers 構造後傳入。為 None / 缺鍵時 trade 寫入預設值
+        （final_stage=1, peak_progress_r=0.0）。
+        """
         n = account.position_count
         if n == 0:
             return None
@@ -181,20 +192,35 @@ class BrokerSimulator:
                 f"check_stop called with {n} open positions; use check_stops"
             )
         pid, pos = next(iter(account.positions.items()))
-        return self._check_one(account, bar, pid, pos)
+        return self._check_one(account, bar, pid, pos, metadata_by_pid)
 
-    def check_stops(self, account: Account, bar: Bar) -> list[Trade]:
-        """多倉新 API：遍歷所有持倉，回傳本根 K 平倉的 Trade list（保序）。"""
+    def check_stops(
+        self,
+        account: Account,
+        bar: Bar,
+        *,
+        metadata_by_pid: dict[int, tuple[int, float]] | None = None,
+    ) -> list[Trade]:
+        """多倉新 API：遍歷所有持倉，回傳本根 K 平倉的 Trade list（保序）。
+
+        ``metadata_by_pid`` 同 ``check_stop``；engine 把 trailing controllers 的
+        ``(stage, peak_progress_r)`` 拍成 dict 傳進來。
+        """
         trades: list[Trade] = []
         # 先 snapshot id 再迭代，避免在 close 過程修改 dict
         for pid, pos in list(account.positions.items()):
-            trade = self._check_one(account, bar, pid, pos)
+            trade = self._check_one(account, bar, pid, pos, metadata_by_pid)
             if trade is not None:
                 trades.append(trade)
         return trades
 
     def _check_one(
-        self, account: Account, bar: Bar, position_id: int, pos: Position
+        self,
+        account: Account,
+        bar: Bar,
+        position_id: int,
+        pos: Position,
+        metadata_by_pid: dict[int, tuple[int, float]] | None = None,
     ) -> Trade | None:
         """檢查單一持倉是否在 ``bar`` 觸發止損。
 
@@ -237,10 +263,13 @@ class BrokerSimulator:
 
         notional = pos.quantity * fill_price
         fee = notional * self.config.taker_fee_rate
+        meta = (metadata_by_pid or {}).get(position_id, (1, 0.0))
         return account.close_position_by_id(
             position_id=position_id,
             exit_price=fill_price,
             exit_timestamp=bar.timestamp,
             fee=fee,
             reason=reason,
+            final_stage=int(meta[0]),
+            peak_progress_r=float(meta[1]),
         )

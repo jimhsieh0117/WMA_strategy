@@ -68,6 +68,7 @@ def export_trades_csv(trades: list[Trade], output_path: str | Path) -> Path:
                 "position_id",
                 "entry_notional", "initial_stop", "stop_distance",
                 "risk_usdt_no_fee", "position_value_per_1u",
+                "final_stage", "peak_progress_r",
             ]
         )
     else:
@@ -93,6 +94,8 @@ def export_trades_csv(trades: list[Trade], output_path: str | Path) -> Path:
                     "stop_distance": _stop_distance(t),
                     "risk_usdt_no_fee": _risk_usdt_no_fee(t),
                     "position_value_per_1u": _position_value_per_1u(t),
+                    "final_stage": t.final_stage,
+                    "peak_progress_r": t.peak_progress_r,
                 }
                 for t in trades
             ]

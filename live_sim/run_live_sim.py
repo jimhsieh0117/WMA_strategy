@@ -199,7 +199,13 @@ class LiveEngine:
 
         # Step 2: 盤中止損檢查
         if self.account.has_position():
-            closed_trades = self.broker.check_stops(self.account, bar)
+            stop_meta = {
+                pid: (ctrl.stage, ctrl.peak_progress_r)
+                for pid, ctrl in self.trailings.items()
+            }
+            closed_trades = self.broker.check_stops(
+                self.account, bar, metadata_by_pid=stop_meta
+            )
             for trade in closed_trades:
                 self.trailings.pop(trade.position_id, None)
                 events.append(PositionEvent(
@@ -279,12 +285,15 @@ class LiveEngine:
         for pid, pos in list(self.account.positions.items()):
             notional = pos.quantity * last_bar.close
             fee = notional * self.broker.config.taker_fee_rate
+            ctrl = self.trailings.get(pid)
             self.account.close_position_by_id(
                 position_id=pid,
                 exit_price=last_bar.close,
                 exit_timestamp=last_bar.timestamp,
                 fee=fee,
                 reason="FORCE_CLOSE_END",
+                final_stage=ctrl.stage if ctrl else 1,
+                peak_progress_r=ctrl.peak_progress_r if ctrl else 0.0,
             )
             self.trailings.pop(pid, None)
 
@@ -1069,6 +1078,8 @@ def _trade_to_row(trade: Trade) -> dict[str, float | str | None]:
         "stop_distance": stop_distance,
         "risk_usdt_no_fee": risk_usdt_no_fee,
         "position_value_per_1u": position_value_per_1u,
+        "final_stage": trade.final_stage,
+        "peak_progress_r": trade.peak_progress_r,
     }
 
 

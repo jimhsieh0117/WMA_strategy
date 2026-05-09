@@ -203,6 +203,9 @@ class Account:
         exit_timestamp: pd.Timestamp,
         fee: float,
         reason: str,
+        *,
+        final_stage: int = 1,
+        peak_progress_r: float = 0.0,
     ) -> Trade:
         """單倉舊 API：恰好 1 筆持倉時平倉；0 / >1 時 raise。"""
         n = len(self._positions)
@@ -214,7 +217,10 @@ class Account:
                 "use close_position_by_id"
             )
         pid = next(iter(self._positions.keys()))
-        return self.close_position_by_id(pid, exit_price, exit_timestamp, fee, reason)
+        return self.close_position_by_id(
+            pid, exit_price, exit_timestamp, fee, reason,
+            final_stage=final_stage, peak_progress_r=peak_progress_r,
+        )
 
     def close_position_by_id(
         self,
@@ -223,6 +229,9 @@ class Account:
         exit_timestamp: pd.Timestamp,
         fee: float,
         reason: str,
+        *,
+        final_stage: int = 1,
+        peak_progress_r: float = 0.0,
     ) -> Trade:
         """多倉新 API：依 ``position_id`` 平倉並產生 ``Trade`` 紀錄。
 
@@ -261,6 +270,8 @@ class Account:
             exit_reason=reason,
             stop_history=tuple(pos.stop_history),
             position_id=pos.position_id,
+            final_stage=int(final_stage),
+            peak_progress_r=float(peak_progress_r),
         )
         self._trade_log.append(trade)
         del self._positions[position_id]
