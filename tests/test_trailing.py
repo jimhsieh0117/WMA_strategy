@@ -422,3 +422,98 @@ class TestRLadder:
         new_stop = ctrl.update(bar, df, 0, current_stop=92.0)
         assert ctrl.stage == 3
         assert new_stop == pytest.approx(140.0)
+
+
+# --------------------------------------------------------------------------- #
+# effective_R override（r_cap 機制）
+# --------------------------------------------------------------------------- #
+
+class TestEffectiveROverride:
+    """以小於實際 R 的 effective_R 重做 stage2/3/ladder 計算，stage1 stop 不受影響。"""
+
+    def test_default_equals_actual(self) -> None:
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(),
+            broker_config=_broker_cfg(),
+        )
+        assert ctrl.effective_R == pytest.approx(ctrl.R) == pytest.approx(5.0)
+
+    def test_reject_non_positive_or_larger_than_R(self) -> None:
+        with pytest.raises(ValueError):
+            TrailingStopController(
+                position=_long_position(entry=100.0, stop=95.0),
+                params=TrailingStopParams(),
+                broker_config=_broker_cfg(),
+                effective_r_override=0.0,
+            )
+        with pytest.raises(ValueError):
+            TrailingStopController(
+                position=_long_position(entry=100.0, stop=95.0),
+                params=TrailingStopParams(),
+                broker_config=_broker_cfg(),
+                effective_r_override=10.0,  # > R=5
+            )
+
+    def test_long_stage2_triggers_earlier_with_capped_R(self) -> None:
+        # 實際 R=10（entry=100、stop=90）。effective_R=2 表示 stage2 trigger 1.2R = 2.4
+        # 即只要 high ≥ 102.4 就會跳 stage2（vs 預設要到 high≥112）
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=90.0),
+            params=TrailingStopParams(),
+            broker_config=_broker_cfg(),
+            effective_r_override=2.0,
+        )
+        df = _make_df(3)
+        bar = _bar(o=100.0, h=102.5, l=99.5, c=102.4)
+        new_stop = ctrl.update(bar, df, 0, current_stop=90.0)
+        assert ctrl.stage == 2
+        # stage2 stop = 100*(1 + 2*0.0005) + 0.2 * effective_R(=2) = 100.1 + 0.4 = 100.5
+        assert new_stop == pytest.approx(100.5)
+
+    def test_short_stage2_uses_capped_R_for_buffer(self) -> None:
+        ctrl = TrailingStopController(
+            position=_short_position(entry=100.0, stop=110.0),  # 實際 R=10
+            params=TrailingStopParams(),
+            broker_config=_broker_cfg(),
+            effective_r_override=2.0,
+        )
+        df = _make_df(3)
+        # 空單 progress = (entry - low) / effective_R = (100 - 97.6) / 2 = 1.2 → stage2
+        bar = _bar(o=100.0, h=100.5, l=97.6, c=98.0)
+        new_stop = ctrl.update(bar, df, 0, current_stop=110.0)
+        assert ctrl.stage == 2
+        # stage2 stop（空）= 100*(1 - 2*0.0005) - 0.2 * effective_R(=2) = 99.9 - 0.4 = 99.5
+        assert new_stop == pytest.approx(99.5)
+
+    def test_r_ladder_uses_effective_R_for_unit(self) -> None:
+        # 實際 R=10、effective_R=2。第一檔 2.8 × effective_R = 5.6 → high ≥ 105.6 觸發
+        # stop = entry + 2.5 × effective_R = 105.0
+        params = TrailingStopParams(stage3_mode="r_ladder")
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=90.0),
+            params=params,
+            broker_config=_broker_cfg(),
+            effective_r_override=2.0,
+        )
+        df = _make_df(3)
+        bar = _bar(o=100.0, h=106.0, l=99.5, c=105.5)
+        new_stop = ctrl.update(bar, df, 0, current_stop=90.0)
+        assert ctrl.stage == 3
+        assert new_stop == pytest.approx(105.0)
+
+    def test_initial_stop_position_unchanged(self) -> None:
+        # Stage 1 完全不更新 stop（return None），不論 effective_R 為何
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=90.0),
+            params=TrailingStopParams(),
+            broker_config=_broker_cfg(),
+            effective_r_override=2.0,
+        )
+        assert ctrl.initial_stop == pytest.approx(90.0)
+        df = _make_df(3)
+        # progress_r = 0.5 / 2 = 0.25，未達 stage2_trigger=1.2 → 仍 stage1
+        bar = _bar(o=100.0, h=100.5, l=99.5, c=100.5)
+        new_stop = ctrl.update(bar, df, 0, current_stop=90.0)
+        assert ctrl.stage == 1
+        assert new_stop is None

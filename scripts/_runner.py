@@ -32,7 +32,7 @@ from src.reporting.plotter import plot_drawdown, plot_equity_curves
 from src.strategy.base import BaseTrendStrategy, prepare_indicators
 from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
-from src.strategy.types import SignalFilterParams, StrategyParams, TrailingStopParams
+from src.strategy.types import RCapParams, SignalFilterParams, StrategyParams, TrailingStopParams
 from src.utils.config import FullConfig, PeriodSpec
 
 logger = logging.getLogger(__name__)
@@ -110,12 +110,17 @@ def run_single_strategy(
         threshold=cfg.signal_filter.threshold,
         source=cfg.signal_filter.source,
     )
+    r_cap = RCapParams(
+        mode=cfg.r_cap.mode,  # type: ignore[arg-type]
+        window=cfg.r_cap.window,
+    )
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
         wma_slow=cfg.wma_slow,
         entry_source=cfg.entry_source,  # type: ignore[arg-type]
         trailing=trailing,
         signal_filter=signal_filter,
+        r_cap=r_cap,
     )
     augmented = prepare_indicators(df, params)
 

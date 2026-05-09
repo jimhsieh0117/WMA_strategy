@@ -91,6 +91,17 @@ strategy:
     threshold: 0.60
     source: raw
 
+  # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響
+  #   mode:
+  #     "off"        = 關閉（預設，與舊版一致）
+  #     rolling_avg  = 進場前 window 根 K 內的歷史 trades + 未平倉持倉初始 R 平均；
+  #                    若 actual_R > avg_R → controller 內部用 avg_R 取代 R
+  #                    （Stage 1 stop 不變、僅影響 Stage 2/3/r_ladder trigger 與 stop 放置）
+  #   window: 過去 N 根 K 線
+  r_cap:
+    mode: "off"
+    window: 100
+
 backtest:
   output_dir: results
   show_progress: true

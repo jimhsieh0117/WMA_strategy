@@ -60,6 +60,8 @@ class TrailingStopController:
         position: Position,
         params: TrailingStopParams,
         broker_config: BrokerConfig,
+        *,
+        effective_r_override: float | None = None,
     ) -> None:
         if position.entry_price <= 0:
             raise ValueError(f"entry_price must be > 0, got {position.entry_price}")
@@ -72,14 +74,32 @@ class TrailingStopController:
         self.entry_price = float(position.entry_price)
         self.initial_stop = float(position.stop_price)
 
-        # R = 風險距離（進場價到初始止損的絕對差）
+        # R = 實際風險距離（進場價到初始止損的絕對差）。
+        # Stage 1 止損永遠用此值；用於計算「異常 R」與 1U 風險預算。
         self.R = abs(self.entry_price - self.initial_stop)
         if self.R <= 0:
             raise ValueError(
                 f"R = |entry - initial_stop| must be > 0, got {self.R}"
             )
 
-        # 異常 R 偵測：R < 雙向手續費的價格距離。
+        # effective_R = 有利方向計算用的 R。預設等於實際 R；
+        # 若 engine 傳入 r_cap 算出的平均（< 實際 R），stage 2 / 3 / r_ladder 的 trigger 與
+        # stop 放置都改用此值（代表「過大 R 不放大止盈門檻」）。Stage 1 stop 不受影響。
+        if effective_r_override is None:
+            self.effective_R = self.R
+        else:
+            if effective_r_override <= 0:
+                raise ValueError(
+                    f"effective_r_override must be > 0, got {effective_r_override}"
+                )
+            if effective_r_override > self.R:
+                raise ValueError(
+                    f"effective_r_override ({effective_r_override}) must be <= R ({self.R}); "
+                    "r_cap should only shrink, never inflate"
+                )
+            self.effective_R = float(effective_r_override)
+
+        # 異常 R 偵測：用實際 R 判斷（與 cap 無關，反映 stop 是否被手續費吃光）。
         # 滑點已內含在 entry_price 中（engine 用 open × (1 ± slippage_pct) 為 limit），
         # 因此「成本」只計入需在 stop 平倉時補回的雙向 taker fee；slippage 不重複計。
         cost_pct = 2 * broker_config.taker_fee_rate
@@ -185,10 +205,14 @@ class TrailingStopController:
     # ----------------------------------------------------------------------- #
 
     def _compute_progress_r(self, bar: Bar) -> float:
-        """目前最大有利移動 = 多單 bar.high − entry / R；空單反之。"""
+        """目前最大有利移動 / effective_R。
+
+        分母用 effective_R（受 r_cap 影響），故 progress=1.0 不一定對應實際 stop；
+        Stage 1 stop 觸發走 broker.check_stop（用實際價格比對），不靠 progress_r。
+        """
         if self.direction is Direction.LONG:
-            return (bar.high - self.entry_price) / self.R
-        return (self.entry_price - bar.low) / self.R
+            return (bar.high - self.entry_price) / self.effective_R
+        return (self.entry_price - bar.low) / self.effective_R
 
     def _transition(
         self, to_stage: int, ts: pd.Timestamp, progress_r: float
@@ -246,7 +270,7 @@ class TrailingStopController:
         因此只需補回 entry/exit 兩次 taker fee 即可達真正保本。
         """
         cost_pct = 2 * self.broker_config.taker_fee_rate
-        buffer = self.params.stage2_buffer_r * self.R
+        buffer = self.params.stage2_buffer_r * self.effective_R
         if self.direction is Direction.LONG:
             return self.entry_price * (1 + cost_pct) + buffer
         return self.entry_price * (1 - cost_pct) - buffer
@@ -276,8 +300,8 @@ class TrailingStopController:
         stop_r = first + k * step - offset
 
         if self.direction is Direction.LONG:
-            return self.entry_price + stop_r * self.R
-        return self.entry_price - stop_r * self.R
+            return self.entry_price + stop_r * self.effective_R
+        return self.entry_price - stop_r * self.effective_R
 
     def _bollinger_stop(
         self, df: pd.DataFrame, bar_index: int

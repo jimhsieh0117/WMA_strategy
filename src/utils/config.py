@@ -61,6 +61,13 @@ class TrailingConfig:
 
 
 @dataclass(frozen=True)
+class RCapConfig:
+    """R-cap 設定（對應 strategy.r_cap 區塊）。"""
+    mode: str = "off"          # "off" | "rolling_avg"
+    window: int = 100
+
+
+@dataclass(frozen=True)
 class SignalFilterConfig:
     """進場訊號濾網設定（對應 strategy.signal_filter 區塊）。"""
     mode: str = "off"          # "off" | "body_sum" | "body_sq_sum"
@@ -106,6 +113,9 @@ class FullConfig:
     # strategy: signal filter
     signal_filter: SignalFilterConfig
 
+    # strategy: r_cap
+    r_cap: RCapConfig
+
     # backtest
     output_dir: Path
     show_progress: bool
@@ -121,6 +131,7 @@ _VALID_ENTRY_SOURCES = {"ha", "raw"}
 _VALID_SIZING_MODES = {"pct", "risk"}
 _VALID_SIGNAL_FILTER_MODES = {"off", "body_sum", "body_sq_sum"}
 _VALID_SIGNAL_FILTER_SOURCES = {"raw", "ha"}
+_VALID_R_CAP_MODES = {"off", "rolling_avg"}
 
 
 def load_config(path: str | Path) -> FullConfig:
@@ -252,6 +263,24 @@ def load_config(path: str | Path) -> FullConfig:
         mode=sf_mode, window=sf_window, threshold=sf_threshold, source=sf_source,
     )
 
+    # ---- strategy: r_cap ----
+    rc_raw = strategy.get("r_cap", {}) or {}
+    raw_rc_mode = rc_raw.get("mode", "off")
+    if raw_rc_mode is False:
+        raw_rc_mode = "off"
+    elif raw_rc_mode is True:
+        raw_rc_mode = "on"  # 後面驗證會 raise
+    rc_mode = str(raw_rc_mode).lower()
+    if rc_mode not in _VALID_R_CAP_MODES:
+        raise ConfigError(
+            f"strategy.r_cap.mode '{rc_mode}' invalid; "
+            f"must be one of {sorted(_VALID_R_CAP_MODES)}"
+        )
+    rc_window = int(rc_raw.get("window", 100))
+    if rc_window < 1:
+        raise ConfigError(f"strategy.r_cap.window must be >= 1, got {rc_window}")
+    r_cap = RCapConfig(mode=rc_mode, window=rc_window)
+
     # ---- backtest ----
     output_dir = Path(backtest.get("output_dir", "results")).expanduser()
     show_progress = bool(backtest.get("show_progress", True))
@@ -282,6 +311,7 @@ def load_config(path: str | Path) -> FullConfig:
         entry_source=entry_source,
         trailing=trailing,
         signal_filter=signal_filter,
+        r_cap=r_cap,
         output_dir=output_dir,
         show_progress=show_progress,
         force_close_at_end=force_close_at_end,

@@ -188,6 +188,38 @@ class TrailingStopParams:
 
 
 # --------------------------------------------------------------------------- #
+# R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響
+# --------------------------------------------------------------------------- #
+
+RCapMode = Literal["off", "rolling_avg"]
+VALID_R_CAP_MODES: tuple[str, ...] = ("off", "rolling_avg")
+
+
+@dataclass(frozen=True)
+class RCapParams:
+    """R-cap：對「往有利方向計算的 R」設上限。
+
+    機制：進場時計算過去 ``window`` 根 K 線內的歷史 trades + 未平倉持倉的初始 R 平均。
+    若當筆 R（|entry − initial_stop|）大於該平均，則 controller 內部用 avg_R
+    取代 R 作為 stage 2 / stage 3 / r_ladder 的 trigger 與止損計算單位。
+    Stage 1 stop 位置不變（仍由 swing 決定，1U 風險預算照舊）。
+
+    窗口內 0 筆歷史 → 不 cap（fallback 用實際 R）。
+    """
+
+    mode: RCapMode = "off"
+    window: int = 100
+
+    def __post_init__(self) -> None:
+        if self.mode not in VALID_R_CAP_MODES:
+            raise ConfigError(
+                f"r_cap.mode must be one of {VALID_R_CAP_MODES}, got {self.mode!r}"
+            )
+        if not isinstance(self.window, int) or isinstance(self.window, bool) or self.window < 1:
+            raise ConfigError(f"r_cap.window must be int >= 1, got {self.window}")
+
+
+# --------------------------------------------------------------------------- #
 # 策略總設定
 # --------------------------------------------------------------------------- #
 
@@ -210,6 +242,9 @@ class StrategyParams:
 
     # ---- 進場訊號濾網（可選）----
     signal_filter: SignalFilterParams = field(default_factory=SignalFilterParams)
+
+    # ---- R-cap（可選）----
+    r_cap: RCapParams = field(default_factory=RCapParams)
 
     def __post_init__(self) -> None:
         if self.wma_fast < 1 or self.wma_slow < 1:

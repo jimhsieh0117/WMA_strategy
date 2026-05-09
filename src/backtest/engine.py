@@ -88,6 +88,7 @@ def run_backtest(
 
     slippage = broker.config.slippage_pct
     trailing_params = strategy.params.trailing
+    r_cap_params = strategy.params.r_cap
 
     for i in iterator:
         ts = df.index[i]
@@ -137,18 +138,28 @@ def run_backtest(
                         pid = result.position_id
                         assert pid is not None
                         new_pos = account.position_by_id(pid)
+                        # r_cap：以「過去 window 根 K」內的歷史 trades + 其他未平倉持倉
+                        # 的初始 R 平均，當作 effective_R 的上限。
+                        effective_r_override = _compute_effective_r_override(
+                            account=account, df=df, bar_index=i,
+                            r_cap=r_cap_params, exclude_pid=pid,
+                            actual_r=abs(new_pos.entry_price - new_pos.stop_price),
+                        )
                         controller = TrailingStopController(
                             position=new_pos,
                             params=trailing_params,
                             broker_config=broker.config,
+                            effective_r_override=effective_r_override,
                         )
                         trailings[pid] = controller
                         logger.debug(
-                            "FILLED %s @ %.4f qty=%.6f stop=%.4f R=%.6f abnormal_R=%s pid=%d",
+                            "FILLED %s @ %.4f qty=%.6f stop=%.4f R=%.6f effR=%.6f "
+                            "abnormal_R=%s pid=%d",
                             pending_signal.direction,
                             result.fill_price, quantity,
                             pending_signal.initial_stop,
-                            controller.R, controller.is_abnormal_r, pid,
+                            controller.R, controller.effective_R,
+                            controller.is_abnormal_r, pid,
                         )
                     else:
                         signals_unfilled += 1
@@ -353,6 +364,57 @@ def _compute_quantity(
     if notional > equity_now:
         return 0.0, None, False, "single_position_overleveraged"
     return quantity, config.risk_per_trade_usdt, True, "ok"
+
+
+def _compute_effective_r_override(
+    *,
+    account: Account,
+    df: pd.DataFrame,
+    bar_index: int,
+    r_cap,
+    exclude_pid: int,
+    actual_r: float,
+) -> float | None:
+    """r_cap 啟用時計算 effective_R override，否則回傳 None（controller 走實際 R）。
+
+    窗口：``[df.index[max(0, bar_index - window)] .. df.index[bar_index]]``，
+    把歷史 trades 與其他未平倉持倉的「初始 R」（``stop_history[0]``）一起取平均。
+    僅當 ``avg_R < actual_r`` 才實際 cap；否則回 None（不變）。
+    窗口內無樣本 → 回 None（fallback 用實際 R）。
+    """
+    if r_cap.mode == "off":
+        return None
+
+    window = int(r_cap.window)
+    start_idx = max(0, bar_index - window)
+    window_start_ts = df.index[start_idx]
+
+    rs: list[float] = []
+    for trade in account.trade_log:
+        if trade.entry_timestamp < window_start_ts:
+            continue
+        if not trade.stop_history:
+            continue
+        r = abs(float(trade.entry_price) - float(trade.stop_history[0][1]))
+        if r > 0:
+            rs.append(r)
+    for pid, pos in account.positions.items():
+        if pid == exclude_pid:
+            continue
+        if pos.entry_timestamp < window_start_ts:
+            continue
+        if not pos.stop_history:
+            continue
+        r = abs(float(pos.entry_price) - float(pos.stop_history[0][1]))
+        if r > 0:
+            rs.append(r)
+
+    if not rs:
+        return None
+    avg_r = sum(rs) / len(rs)
+    if avg_r >= actual_r:
+        return None
+    return avg_r
 
 
 def _serialize_params(params) -> dict:
