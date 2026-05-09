@@ -176,6 +176,11 @@ class Account:
                 f"short stop_price ({stop_price}) must be > entry_price ({entry_price})"
             )
 
+        # 開倉當下的總權益（fee 尚未扣）；用於 return_pct 分母。
+        equity_at_entry = self._cash + sum(
+            p.unrealized_pnl(float(entry_price)) for p in self._positions.values()
+        )
+
         new_cash = self._cash - fee
         if new_cash < 0:
             raise AccountInvariantError(
@@ -194,6 +199,7 @@ class Account:
             entry_fee=float(fee),
             stop_history=[(entry_timestamp, float(stop_price))],
             position_id=pid,
+            equity_at_entry=float(equity_at_entry),
         )
         return pid
 
@@ -250,8 +256,10 @@ class Account:
         pos = self._positions[position_id]
         gross_pnl = pos.unrealized_pnl(exit_price)
         net_pnl = gross_pnl - pos.entry_fee - fee
-        notional = pos.notional_at_entry
-        return_pct = net_pnl / notional if notional > 0 else 0.0
+        # return_pct 分母 = 開倉當下總權益（對「總資金」的影響百分比）；
+        # 舊資料無 equity_at_entry → fallback 用 notional_at_entry，避免 zero-div。
+        denom = pos.equity_at_entry if pos.equity_at_entry > 0 else pos.notional_at_entry
+        return_pct = net_pnl / denom if denom > 0 else 0.0
 
         self._cash += gross_pnl - fee
 

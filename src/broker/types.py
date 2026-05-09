@@ -141,6 +141,9 @@ class Position:
     entry_fee: float
     stop_history: list[tuple[pd.Timestamp, float]] = field(default_factory=list)
     position_id: int = 0
+    # 開倉當下的總權益（cash + 其他持倉以 entry_price mark 的 unrealized）。
+    # 用於計算 trade.return_pct = net_pnl / equity_at_entry，反映「對總權益的影響百分比」。
+    equity_at_entry: float = 0.0
 
     @property
     def notional_at_entry(self) -> float:
@@ -162,6 +165,7 @@ class Position:
             "entry_fee": self.entry_fee,
             "stop_history": [(ts.isoformat(), float(v)) for ts, v in self.stop_history],
             "position_id": self.position_id,
+            "equity_at_entry": self.equity_at_entry,
         }
 
     @classmethod
@@ -175,6 +179,7 @@ class Position:
             entry_fee=float(data["entry_fee"]),
             stop_history=[(pd.Timestamp(ts), float(v)) for ts, v in data["stop_history"]],
             position_id=int(data["position_id"]),
+            equity_at_entry=float(data.get("equity_at_entry", 0.0)),
         )
 
 
