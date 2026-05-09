@@ -104,6 +104,9 @@ def run_single_strategy(
         r_ladder_abnormal_step=cfg.trailing.r_ladder_abnormal_step,
         r_ladder_trigger_offset=cfg.trailing.r_ladder_trigger_offset,
         r_ladder_abnormal_trigger_offset=cfg.trailing.r_ladder_abnormal_trigger_offset,
+        early_exit_enabled=cfg.trailing.early_exit_enabled,
+        early_exit_observation_bars=cfg.trailing.early_exit_observation_bars,
+        early_exit_min_peak_r=cfg.trailing.early_exit_min_peak_r,
     )
     signal_filter = SignalFilterParams(
         mode=cfg.signal_filter.mode,  # type: ignore[arg-type]

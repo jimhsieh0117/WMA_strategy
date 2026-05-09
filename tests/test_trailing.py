@@ -596,3 +596,129 @@ class TestStage2PctTrigger:
         bar = _bar(o=100.0, h=106.0, l=99.5, c=105.0)
         ctrl.update(bar, df, 0, current_stop=95.0)
         assert ctrl.stage == 2
+
+
+# --------------------------------------------------------------------------- #
+# Early-exit cancel
+# --------------------------------------------------------------------------- #
+
+class TestEarlyExitCancel:
+    """進場後 N 根 K 觀測，浮盈不足 → should_early_exit=True。"""
+
+    def test_default_disabled(self) -> None:
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(),  # early_exit_enabled=False
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.5, 100.0), df, 0, current_stop=95.0)
+        ctrl.update(_bar(100.0, 100.0, 99.5, 99.7), df, 1, current_stop=95.0)
+        assert ctrl.should_early_exit() is False
+
+    def test_long_no_excursion_triggers_cancel(self) -> None:
+        # entry=100, stop=95, observation=1 → bar[i+1] high<entry 觸發 cancel
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_min_peak_r=0.0,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        # bar[i]：本根 K 略高（上一根 high=100.3 > entry，progress_r > 0），但這不是觀測點
+        ctrl.update(_bar(100.0, 100.3, 99.5, 100.0), df, 0, current_stop=95.0)
+        assert ctrl.bars_observed == 1
+        assert ctrl.should_early_exit() is False  # 還沒到觀測點
+        # bar[i+1]：high < entry → 該根 K 浮盈 = 0，按 progress_r=(99.9-100)/5=-0.02 < 0 → cancel
+        ctrl.update(_bar(99.95, 99.9, 99.5, 99.6), df, 1, current_stop=95.0)
+        assert ctrl.bars_observed == 2
+        assert ctrl.should_early_exit() is True
+
+    def test_long_positive_excursion_no_cancel(self) -> None:
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_min_peak_r=0.0,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.3, 99.5, 100.0), df, 0, current_stop=95.0)
+        # bar[i+1]: high=101 > entry → per-bar progress_r = (101-100)/5 = 0.2 > 0 → no cancel
+        ctrl.update(_bar(100.0, 101.0, 99.5, 100.5), df, 1, current_stop=95.0)
+        assert ctrl.should_early_exit() is False
+
+    def test_short_no_excursion_triggers_cancel(self) -> None:
+        ctrl = TrailingStopController(
+            position=_short_position(entry=100.0, stop=105.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_min_peak_r=0.0,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.7, 100.0), df, 0, current_stop=105.0)
+        # bar[i+1]: low=100.05 > entry=100 → 空單浮盈 = (100-100.05)/5 = -0.01 < 0 → cancel
+        ctrl.update(_bar(100.0, 100.5, 100.05, 100.4), df, 1, current_stop=105.0)
+        assert ctrl.should_early_exit() is True
+
+    def test_after_stage2_promoted_no_cancel(self) -> None:
+        # 觀測期內就晉級 stage 2 → 不該 cancel（交給 trailing 處理）
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_min_peak_r=0.0,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.3, 99.5, 100.0), df, 0, current_stop=95.0)
+        # bar[i+1]: high=106.5 → progress_r = 1.3 → stage 2 觸發
+        ctrl.update(_bar(100.0, 106.5, 99.5, 105.0), df, 1, current_stop=95.0)
+        assert ctrl.stage == 2
+        assert ctrl.should_early_exit() is False
+
+    def test_min_peak_r_threshold(self) -> None:
+        # threshold=0.1：bar[i+1] progress_r=0.05 < 0.1 → cancel
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),  # R=5
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_min_peak_r=0.1,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.3, 99.5, 100.0), df, 0, current_stop=95.0)
+        # bar[i+1] high=100.25 → progress_r = 0.25/5 = 0.05 < 0.1 → cancel
+        ctrl.update(_bar(100.0, 100.25, 99.5, 100.1), df, 1, current_stop=95.0)
+        assert ctrl.should_early_exit() is True
+
+    def test_check_only_at_observation_point(self) -> None:
+        # observation_bars=2 → 在 bars_observed==3 時才檢查
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=2,
+                early_exit_min_peak_r=0.0,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(4)
+        ctrl.update(_bar(100.0, 99.95, 99.5, 99.7), df, 0, current_stop=95.0)
+        assert ctrl.should_early_exit() is False  # bars_observed=1
+        ctrl.update(_bar(99.7, 99.6, 99.4, 99.5), df, 1, current_stop=95.0)
+        assert ctrl.should_early_exit() is False  # bars_observed=2，但觀測點是 3
+        ctrl.update(_bar(99.5, 99.4, 99.2, 99.3), df, 2, current_stop=95.0)
+        assert ctrl.should_early_exit() is True   # bars_observed=3

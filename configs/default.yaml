@@ -86,6 +86,14 @@ strategy:
     r_ladder_trigger_offset:         0.3   # trigger − stop（2.8 觸發 → 鎖 2.5）
     r_ladder_abnormal_trigger_offset: 0.6  # abnormal：5.6 觸發 → 鎖 5.0
 
+    # ---- Early-exit（進場後 N 根 K 主動 cancel）----
+    # 觀測期最後一根 K 的有利浮盈 < min_peak_r × R 且 stage 仍為 1 → bar.close 平倉
+    # 實測：thr=0R 救 865 s1 但同時誤殺 143 s3 + 192 s2，net −29.74 USDT
+    # 預設關閉，保留開關供未來特定參數組合再試
+    early_exit_enabled:           false
+    early_exit_observation_bars:  1
+    early_exit_min_peak_r:        0.0
+
   # 進場訊號濾網（六根 K 實體比例閘門）
   #   mode:
   #     off          = 關閉（預設，與舊版一致）

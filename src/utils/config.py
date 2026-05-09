@@ -60,6 +60,11 @@ class TrailingConfig:
     r_ladder_trigger_offset: float = 0.3
     r_ladder_abnormal_trigger_offset: float = 0.6
 
+    # early_exit
+    early_exit_enabled: bool = False
+    early_exit_observation_bars: int = 1
+    early_exit_min_peak_r: float = 0.0
+
 
 @dataclass(frozen=True)
 class RCapConfig:
@@ -236,6 +241,13 @@ def load_config(path: str | Path) -> FullConfig:
         r_ladder_trigger_offset=float(trailing_raw.get("r_ladder_trigger_offset", 0.3)),
         r_ladder_abnormal_trigger_offset=float(
             trailing_raw.get("r_ladder_abnormal_trigger_offset", 0.6)
+        ),
+        early_exit_enabled=bool(trailing_raw.get("early_exit_enabled", False)),
+        early_exit_observation_bars=int(
+            trailing_raw.get("early_exit_observation_bars", 1)
+        ),
+        early_exit_min_peak_r=float(
+            trailing_raw.get("early_exit_min_peak_r", 0.0)
         ),
     )
 

@@ -122,6 +122,11 @@ class TrailingStopController:
         # 追蹤歷史最大有利進度（價格相對 entry 的 fraction，例如 0.003 = 0.3%）。
         # 用於 stage2_pct_trigger（OR 條件，與 R-based trigger 並行）。
         self.peak_pct = 0.0
+        # update() 被呼叫過幾次（即從進場後處理過幾根 K，含進場 K 本身）。
+        # 用於 early_exit 判斷：observation_bars=1 → 在 bars_observed==2 時檢查。
+        self.bars_observed = 0
+        # 觀測 bar 當根 K 的有利進度（per-bar，非累積；給 early_exit 用）
+        self._last_bar_progress_r = 0.0
         self._transitions: list[StageTransition] = []
 
         logger.debug(
@@ -153,10 +158,14 @@ class TrailingStopController:
         Returns:
             新的止損價（要 ratchet）或 None（保持不動）。
         """
+        # 0. 累計觀測 bar 數（含進場 K）
+        self.bars_observed += 1
+
         # 1. 用 bar 的有利方向極值衡量本根 K 達到的進度
         # progress_r = (peak − entry) / effective_R；progress_pct = (peak − entry) / entry
         progress_r = self._compute_progress_r(bar)
         progress_pct = self._compute_progress_pct(bar)
+        self._last_bar_progress_r = progress_r  # per-bar，不累積（給 early_exit 用）
         if progress_r > self.peak_progress_r:
             self.peak_progress_r = progress_r
         if progress_pct > self.peak_pct:
@@ -183,6 +192,26 @@ class TrailingStopController:
             return candidate
         return None
 
+    def should_early_exit(self) -> bool:
+        """觀測期最後一根 K 收盤時，若該根 K 的浮盈 < 門檻 → 提早 cancel。
+
+        條件（須全部滿足）：
+        1. ``early_exit_enabled`` = True
+        2. ``stage == 1``（已晉級則交給 trailing 接手）
+        3. ``bars_observed == observation_bars + 1``（剛好結束觀測期）
+        4. 該根 K 的 progress_r < ``min_peak_r``
+
+        engine 應在 ``update()`` 之後呼叫此方法。回傳 True 表示「該 bar.close 主動平倉」。
+        """
+        if not self.params.early_exit_enabled:
+            return False
+        if self.stage != 1:
+            return False
+        # observation_bars=1 → bar[i+1] 那次 update（bars_observed=2）做檢查
+        if self.bars_observed != self.params.early_exit_observation_bars + 1:
+            return False
+        return self._last_bar_progress_r < self.params.early_exit_min_peak_r
+
     @property
     def transitions(self) -> list[StageTransition]:
         """回傳目前累積的 stage 變化紀錄（防外部修改）。"""
@@ -202,6 +231,7 @@ class TrailingStopController:
             "stage": int(self.stage),
             "peak_progress_r": float(self.peak_progress_r),
             "peak_pct": float(self.peak_pct),
+            "bars_observed": int(self.bars_observed),
         }
 
     def restore_runtime(self, snapshot: dict) -> None:
@@ -215,9 +245,13 @@ class TrailingStopController:
         peak_pct = float(snapshot.get("peak_pct", 0.0))  # 舊 snapshot 容錯
         if peak_pct < 0:
             raise ValueError(f"peak_pct must be >= 0, got {peak_pct}")
+        bars_observed = int(snapshot.get("bars_observed", 0))
+        if bars_observed < 0:
+            raise ValueError(f"bars_observed must be >= 0, got {bars_observed}")
         self.stage = stage
         self.peak_progress_r = peak
         self.peak_pct = peak_pct
+        self.bars_observed = bars_observed
 
     # ----------------------------------------------------------------------- #
     # 內部：階段邏輯

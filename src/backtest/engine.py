@@ -200,6 +200,9 @@ def run_backtest(
                 trailings.pop(trade.position_id, None)
 
         # === Step 3a: 收盤 ratchet 拖曳止損（每筆獨立）===
+        # 兩階段：先全部 update（更新 stage / peak / bars_observed），再依
+        # should_early_exit 平倉。避免在 iteration 中改變 account.positions。
+        early_exit_pids: list[int] = []
         for pid, pos in account.positions.items():
             controller = trailings.get(pid)
             if controller is None:
@@ -215,6 +218,33 @@ def run_backtest(
                     "RATCHET %s pid=%d stop %.4f -> %.4f (stage=%d)",
                     pos.direction, pid, old_stop, new_stop, controller.stage,
                 )
+            if controller.should_early_exit():
+                early_exit_pids.append(pid)
+
+        # === Step 3a.5: Early-exit cancel（觀測期內未達浮盈門檻）===
+        for pid in early_exit_pids:
+            pos = account.positions.get(pid)
+            if pos is None:
+                continue  # 同一 bar 同時被 stage 1 stop 觸發 → 已平倉
+            controller = trailings.pop(pid, None)
+            exit_price = float(bar.close)
+            notional = pos.quantity * exit_price
+            fee = notional * broker.config.taker_fee_rate
+            account.close_position_by_id(
+                position_id=pid,
+                exit_price=exit_price,
+                exit_timestamp=ts,
+                fee=fee,
+                reason="EARLY_CANCEL",
+                final_stage=1,
+                peak_progress_r=controller.peak_progress_r if controller else 0.0,
+            )
+            logger.debug(
+                "EARLY_CANCEL %s pid=%d @ %.4f (peak_r=%.3f < %.3f)",
+                pos.direction, pid, exit_price,
+                controller.peak_progress_r if controller else 0.0,
+                trailing_params.early_exit_min_peak_r,
+            )
 
         # === Step 3b: 收盤偵測進場訊號 ===
         # 進場閘門：

@@ -128,6 +128,14 @@ class TrailingStopParams:
     r_ladder_trigger_offset: float = 0.3
     r_ladder_abnormal_trigger_offset: float = 0.6
 
+    # ---- Early-exit（進場後 N 根 K 主動 cancel）----
+    # 機制：觀測期最後一根 K 收盤時若該根 K 的有利浮盈 < min_peak_r × R 且 stage 仍為 1，
+    # 該 bar.close 主動平倉（exit_reason="EARLY_CANCEL"，final_stage=1）。
+    # observation_bars=1 表示「進場後 1 根 K」（與 analyze_first_bar_response.py 一致）。
+    early_exit_enabled: bool = False
+    early_exit_observation_bars: int = 1
+    early_exit_min_peak_r: float = 0.0
+
     def __post_init__(self) -> None:
         for name, val, low_ok in [
             ("swing_lookback", self.swing_lookback, 1),
@@ -189,6 +197,19 @@ class TrailingStopParams:
             raise ConfigError(
                 f"r_ladder_abnormal_trigger_offset ({self.r_ladder_abnormal_trigger_offset}) "
                 f"must be < r_ladder_abnormal_step ({self.r_ladder_abnormal_step})"
+            )
+
+        # early_exit 驗證
+        if not isinstance(self.early_exit_enabled, bool):
+            raise ConfigError(
+                f"early_exit_enabled must be bool, got {self.early_exit_enabled!r}"
+            )
+        if (not isinstance(self.early_exit_observation_bars, int)
+                or isinstance(self.early_exit_observation_bars, bool)
+                or self.early_exit_observation_bars < 0):
+            raise ConfigError(
+                f"early_exit_observation_bars must be int >= 0, "
+                f"got {self.early_exit_observation_bars}"
             )
 
 
