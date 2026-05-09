@@ -34,6 +34,11 @@ account:
   allow_pyramiding: true
   leverage_cap: 100.0             # 過槓桿允許（使用者自承風險）；100 = 實質無上限
 
+  # R 噪音過濾：R_price / entry_price < r_min_pct → 拒絕該筆進場
+  #   原因：R 太小時 qty 變大、手續費佔比過高，趨勢段未達就被吃光
+  #   0 = 關閉；常用值 0.0012（0.12%，15m ETH 經驗值）
+  r_min_pct: 0.0012
+
 fees:
   taker_fee_rate: 0.0005    # 0.05%
   maker_fee_rate: 0.0002    # 0.02%
@@ -91,12 +96,13 @@ strategy:
     threshold: 0.60
     source: raw
 
-  # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響
+  # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響（trigger-only 版本）
   #   mode:
   #     "off"        = 關閉（預設，與舊版一致）
   #     rolling_avg  = 進場前 window 根 K 內的歷史 trades + 未平倉持倉初始 R 平均；
-  #                    若 actual_R > avg_R → controller 內部用 avg_R 取代 R
-  #                    （Stage 1 stop 不變、僅影響 Stage 2/3/r_ladder trigger 與 stop 放置）
+  #                    若 actual_R > avg_R → 用 avg_R 當 progress_r 分母 → stage 2/3/r_ladder
+  #                    的 trigger 提前達成。stop 放置（stage2 buffer、ladder offset）仍用
+  #                    實際 R 保留趨勢段呼吸空間。Stage 1 stop 永遠不變。
   #   window: 過去 N 根 K 線
   r_cap:
     mode: "off"

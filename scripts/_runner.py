@@ -137,6 +137,7 @@ def run_single_strategy(
         risk_per_trade_usdt=cfg.risk_per_trade_usdt,
         allow_pyramiding=cfg.allow_pyramiding,
         leverage_cap=cfg.leverage_cap,
+        r_min_pct=cfg.r_min_pct,
         force_close_at_end=cfg.force_close_at_end,
     )
 

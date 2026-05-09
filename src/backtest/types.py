@@ -45,6 +45,9 @@ class EngineConfig:
     force_close_at_end: bool = False
     allow_pyramiding: bool = False
     leverage_cap: float = 1.0
+    # R/entry_price 比例下限。低於此比例 → 視為「噪音 R」拒絕該筆進場
+    # （手續費 / 滑點吃光收益）。0 = 關閉。
+    r_min_pct: float = 0.0
 
     def __post_init__(self) -> None:
         if self.sizing_mode not in ("pct", "risk"):
@@ -62,6 +65,10 @@ class EngineConfig:
         if self.leverage_cap <= 0:
             raise ConfigError(
                 f"leverage_cap must be > 0, got {self.leverage_cap}"
+            )
+        if self.r_min_pct < 0:
+            raise ConfigError(
+                f"r_min_pct must be >= 0, got {self.r_min_pct}"
             )
 
 

@@ -197,12 +197,13 @@ VALID_R_CAP_MODES: tuple[str, ...] = ("off", "rolling_avg")
 
 @dataclass(frozen=True)
 class RCapParams:
-    """R-cap：對「往有利方向計算的 R」設上限。
+    """R-cap：以近期 trades 平均 R 作為「止盈進度單位」的上限（trigger-only）。
 
     機制：進場時計算過去 ``window`` 根 K 線內的歷史 trades + 未平倉持倉的初始 R 平均。
-    若當筆 R（|entry − initial_stop|）大於該平均，則 controller 內部用 avg_R
-    取代 R 作為 stage 2 / stage 3 / r_ladder 的 trigger 與止損計算單位。
-    Stage 1 stop 位置不變（仍由 swing 決定，1U 風險預算照舊）。
+    若當筆 R（|entry − initial_stop|）大於該平均，則 controller 內部用 avg_R 作為
+    progress_r 的分母 → stage 2 / stage 3 / r_ladder 的 **trigger 提前**達成。
+    但 stop 放置（stage2 buffer、r_ladder offset）仍用實際 R，保留趨勢段呼吸空間。
+    Stage 1 stop 位置永不變（仍由 swing 決定，1U 風險預算照舊）。
 
     窗口內 0 筆歷史 → 不 cap（fallback 用實際 R）。
     """

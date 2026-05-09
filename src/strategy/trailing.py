@@ -82,9 +82,11 @@ class TrailingStopController:
                 f"R = |entry - initial_stop| must be > 0, got {self.R}"
             )
 
-        # effective_R = 有利方向計算用的 R。預設等於實際 R；
-        # 若 engine 傳入 r_cap 算出的平均（< 實際 R），stage 2 / 3 / r_ladder 的 trigger 與
-        # stop 放置都改用此值（代表「過大 R 不放大止盈門檻」）。Stage 1 stop 不受影響。
+        # effective_R = 有利方向計算「進度單位」用的 R。預設等於實際 R；
+        # 若 engine 傳入 r_cap 算出的平均（< 實際 R），用於 progress_r 分母 →
+        # 影響 stage 2 / 3 / r_ladder 的 trigger 何時被滿足（觸發提前）。
+        # 但 stage 2 buffer 與 r_ladder stop 放置仍用實際 R（保留趨勢段呼吸空間）。
+        # Stage 1 stop 不受影響。
         if effective_r_override is None:
             self.effective_R = self.R
         else:
@@ -270,7 +272,8 @@ class TrailingStopController:
         因此只需補回 entry/exit 兩次 taker fee 即可達真正保本。
         """
         cost_pct = 2 * self.broker_config.taker_fee_rate
-        buffer = self.params.stage2_buffer_r * self.effective_R
+        # stop 放置用實際 R（保留 trade 自身寬度，避免 r_cap 縮緊 stop 把趨勢段過早砍掉）
+        buffer = self.params.stage2_buffer_r * self.R
         if self.direction is Direction.LONG:
             return self.entry_price * (1 + cost_pct) + buffer
         return self.entry_price * (1 - cost_pct) - buffer
@@ -299,9 +302,10 @@ class TrailingStopController:
         k = int(math.floor((self.peak_progress_r - first) / step))
         stop_r = first + k * step - offset
 
+        # stop 放置用實際 R（與 stage2 一致，保留趨勢段呼吸空間）
         if self.direction is Direction.LONG:
-            return self.entry_price + stop_r * self.effective_R
-        return self.entry_price - stop_r * self.effective_R
+            return self.entry_price + stop_r * self.R
+        return self.entry_price - stop_r * self.R
 
     def _bollinger_stop(
         self, df: pd.DataFrame, bar_index: int

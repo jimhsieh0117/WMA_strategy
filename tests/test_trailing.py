@@ -457,7 +457,8 @@ class TestEffectiveROverride:
 
     def test_long_stage2_triggers_earlier_with_capped_R(self) -> None:
         # 實際 R=10（entry=100、stop=90）。effective_R=2 表示 stage2 trigger 1.2R = 2.4
-        # 即只要 high ≥ 102.4 就會跳 stage2（vs 預設要到 high≥112）
+        # 即只要 high ≥ 102.4 就會跳 stage2（vs 預設要到 high≥112）。
+        # 但 stop 放置仍用 actual_R：buffer = 0.2 * 10 = 2.0
         ctrl = TrailingStopController(
             position=_long_position(entry=100.0, stop=90.0),
             params=TrailingStopParams(),
@@ -468,10 +469,10 @@ class TestEffectiveROverride:
         bar = _bar(o=100.0, h=102.5, l=99.5, c=102.4)
         new_stop = ctrl.update(bar, df, 0, current_stop=90.0)
         assert ctrl.stage == 2
-        # stage2 stop = 100*(1 + 2*0.0005) + 0.2 * effective_R(=2) = 100.1 + 0.4 = 100.5
-        assert new_stop == pytest.approx(100.5)
+        # stage2 stop = 100*(1 + 2*0.0005) + 0.2 * actual_R(=10) = 100.1 + 2.0 = 102.1
+        assert new_stop == pytest.approx(102.1)
 
-    def test_short_stage2_uses_capped_R_for_buffer(self) -> None:
+    def test_short_stage2_uses_actual_R_for_buffer(self) -> None:
         ctrl = TrailingStopController(
             position=_short_position(entry=100.0, stop=110.0),  # 實際 R=10
             params=TrailingStopParams(),
@@ -483,12 +484,12 @@ class TestEffectiveROverride:
         bar = _bar(o=100.0, h=100.5, l=97.6, c=98.0)
         new_stop = ctrl.update(bar, df, 0, current_stop=110.0)
         assert ctrl.stage == 2
-        # stage2 stop（空）= 100*(1 - 2*0.0005) - 0.2 * effective_R(=2) = 99.9 - 0.4 = 99.5
-        assert new_stop == pytest.approx(99.5)
+        # stage2 stop（空）= 100*(1 - 2*0.0005) - 0.2 * actual_R(=10) = 99.9 - 2.0 = 97.9
+        assert new_stop == pytest.approx(97.9)
 
-    def test_r_ladder_uses_effective_R_for_unit(self) -> None:
-        # 實際 R=10、effective_R=2。第一檔 2.8 × effective_R = 5.6 → high ≥ 105.6 觸發
-        # stop = entry + 2.5 × effective_R = 105.0
+    def test_r_ladder_trigger_uses_effective_R_but_stop_uses_actual_R(self) -> None:
+        # 實際 R=10、effective_R=2。第一檔 trigger = 2.8 × effective_R = 5.6
+        # → high ≥ 105.6 觸發。但 stop 放置 = entry + 2.5 × actual_R = 125.0
         params = TrailingStopParams(stage3_mode="r_ladder")
         ctrl = TrailingStopController(
             position=_long_position(entry=100.0, stop=90.0),
@@ -500,7 +501,8 @@ class TestEffectiveROverride:
         bar = _bar(o=100.0, h=106.0, l=99.5, c=105.5)
         new_stop = ctrl.update(bar, df, 0, current_stop=90.0)
         assert ctrl.stage == 3
-        assert new_stop == pytest.approx(105.0)
+        # max(stage2_value=102.1, ladder=125.0) = 125.0
+        assert new_stop == pytest.approx(125.0)
 
     def test_initial_stop_position_unchanged(self) -> None:
         # Stage 1 完全不更新 stop（return None），不論 effective_R 為何

@@ -151,6 +151,22 @@ class TestEngineRiskSizing:
             f"expected ~-1 USDT, got {trade.net_pnl:.4f}"
         )
 
+    def test_risk_mode_rejects_when_r_below_r_min_pct(self) -> None:
+        # r_min_pct=0.005（0.5%）。stop 設 99.0 → R/entry ≈ 0.5%/100 = 0.005，
+        # 緊貼門檻；改設 99.5 → R/entry = 0.5%（剛好）；改設 99.6 → 0.4% 應被拒
+        df = make_test_df(20)
+        acct, broker = _account_and_broker()
+        strat = MockStrategy(Direction.LONG, entry_at=10, initial_stop=99.6)
+        cfg = EngineConfig(
+            sizing_mode="risk", risk_per_trade_usdt=1.0,
+            allow_pyramiding=True, leverage_cap=100.0,  # 排除 leverage 干擾
+            r_min_pct=0.005,
+        )
+        result = run_backtest(df, strat, acct, broker, cfg)
+        assert result.signals_emitted == 1
+        assert result.signals_filled == 0
+        assert len(result.trades) == 0
+
     def test_risk_mode_rejects_when_overleveraged(self) -> None:
         df = make_test_df(20)
         # 把 stop 設得極接近 entry → R 太小 → notional 會爆

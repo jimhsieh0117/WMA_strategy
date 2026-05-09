@@ -96,6 +96,7 @@ class FullConfig:
     risk_per_trade_usdt: float
     allow_pyramiding: bool
     leverage_cap: float
+    r_min_pct: float
 
     # fees
     taker_fee_rate: float
@@ -187,6 +188,11 @@ def load_config(path: str | Path) -> FullConfig:
     if leverage_cap <= 0:
         raise ConfigError(
             f"account.leverage_cap must be > 0, got {leverage_cap}"
+        )
+    r_min_pct = float(account.get("r_min_pct", 0.0))
+    if r_min_pct < 0:
+        raise ConfigError(
+            f"account.r_min_pct must be >= 0, got {r_min_pct}"
         )
 
     # ---- fees ----
@@ -303,6 +309,7 @@ def load_config(path: str | Path) -> FullConfig:
         risk_per_trade_usdt=risk_per_trade_usdt,
         allow_pyramiding=allow_pyramiding,
         leverage_cap=leverage_cap,
+        r_min_pct=r_min_pct,
         taker_fee_rate=taker,
         maker_fee_rate=maker,
         slippage_pct=slip,

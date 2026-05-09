@@ -344,8 +344,17 @@ def _compute_quantity(
         quantity = target_notional / limit_price
         return quantity, None, True, "ok"
 
+    # risk 模式：先做 R 噪音門檻（R_price / limit_price < r_min_pct → 拒絕）
+    r_price = abs(limit_price - initial_stop)
+    if config.r_min_pct > 0 and limit_price > 0:
+        r_pct = r_price / limit_price
+        if r_pct < config.r_min_pct:
+            return 0.0, None, False, (
+                f"r_too_small (r_pct={r_pct:.5f} < r_min_pct={config.r_min_pct:.5f})"
+            )
+
     # risk 模式：qty = R / [|limit-stop| + (limit+stop)×taker]
-    denom = abs(limit_price - initial_stop) + (limit_price + initial_stop) * taker_fee_rate
+    denom = r_price + (limit_price + initial_stop) * taker_fee_rate
     if denom <= 0:
         return 0.0, None, False, "denom_non_positive"
     quantity = config.risk_per_trade_usdt / denom
