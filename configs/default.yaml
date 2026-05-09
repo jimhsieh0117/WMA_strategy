@@ -37,7 +37,7 @@ account:
   # R 噪音過濾：R_price / entry_price < r_min_pct → 拒絕該筆進場
   #   原因：R 太小時 qty 變大、手續費佔比過高，趨勢段未達就被吃光
   #   0 = 關閉；常用值 0.0012（0.12%，15m ETH 經驗值）
-  r_min_pct: 0.0012
+  r_min_pct: 0.0022
 
 fees:
   taker_fee_rate: 0.0005    # 0.05%
@@ -61,6 +61,10 @@ strategy:
     stage2_normal_trigger_r:    1.2     # 正常 R：1.2R 觸發保本
     stage2_abnormal_trigger_r:  2.4     # 異常 R（R<手續費+滑點）：2.4R 觸發
     stage2_buffer_r:            0.2     # 保本 stop 額外 +0.2R buffer
+    # %-based OR 觸發：peak_pct = (peak − entry) / entry 達此值也觸發 stage 2。
+    # 0 = 關閉（純 R-based 舊版）；>0 = OR 條件
+    # 實測：0.0030 救 750 s1→s2 但同時砍掉 445 s3→s2，net −100 USDT。維持 0。
+    stage2_pct_trigger:         0.0
 
     # Stage 3：跟蹤模式
     stage3_normal_trigger_r:    2.4     # 正常 R：進入 Stage 3 的 trigger

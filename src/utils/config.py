@@ -45,6 +45,7 @@ class TrailingConfig:
     stage2_normal_trigger_r: float = 1.2
     stage2_abnormal_trigger_r: float = 2.4
     stage2_buffer_r: float = 0.2
+    stage2_pct_trigger: float = 0.0   # 0 = 關閉；>0 = OR 條件 (peak_pct ≥ 此值)
 
     stage3_normal_trigger_r: float = 2.4
     stage3_abnormal_trigger_r: float = 4.8
@@ -218,6 +219,7 @@ def load_config(path: str | Path) -> FullConfig:
         stage2_normal_trigger_r=float(trailing_raw.get("stage2_normal_trigger_r", 1.2)),
         stage2_abnormal_trigger_r=float(trailing_raw.get("stage2_abnormal_trigger_r", 2.4)),
         stage2_buffer_r=float(trailing_raw.get("stage2_buffer_r", 0.2)),
+        stage2_pct_trigger=float(trailing_raw.get("stage2_pct_trigger", 0.0)),
         stage3_normal_trigger_r=float(trailing_raw.get("stage3_normal_trigger_r", 2.4)),
         stage3_abnormal_trigger_r=float(trailing_raw.get("stage3_abnormal_trigger_r", 4.8)),
         bollinger_period=int(trailing_raw.get("bollinger_period", 20)),

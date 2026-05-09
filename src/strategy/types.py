@@ -100,7 +100,11 @@ class TrailingStopParams:
     # ---- Stage 2 ----
     stage2_normal_trigger_r: float = 1.2
     stage2_abnormal_trigger_r: float = 2.4
-    stage2_buffer_r: float = 0.2         # 保本 stop 額外加 0.2R buffer
+    stage2_buffer_r: float = 0.2
+    # 額外的 %-based 觸發（OR 條件）：peak_pct = (peak − entry) / entry。
+    # 0 = 關閉（與舊版一致）；>0 → stage 1→2 額外觸發於 peak_pct ≥ 此值。
+    # stop 放置仍走 R-based（entry + 0.2R + 雙向 taker）。Stage 3 transition 不受影響。
+    stage2_pct_trigger: float = 0.0         # 保本 stop 額外加 0.2R buffer
 
     # ---- Stage 3 ----
     stage3_normal_trigger_r: float = 2.4
@@ -137,6 +141,7 @@ class TrailingStopParams:
             ("stage2_normal_trigger_r", self.stage2_normal_trigger_r),
             ("stage2_abnormal_trigger_r", self.stage2_abnormal_trigger_r),
             ("stage2_buffer_r", self.stage2_buffer_r),
+            ("stage2_pct_trigger", self.stage2_pct_trigger),
             ("stage3_normal_trigger_r", self.stage3_normal_trigger_r),
             ("stage3_abnormal_trigger_r", self.stage3_abnormal_trigger_r),
             ("bollinger_num_std", self.bollinger_num_std),

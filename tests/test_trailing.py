@@ -519,3 +519,80 @@ class TestEffectiveROverride:
         new_stop = ctrl.update(bar, df, 0, current_stop=90.0)
         assert ctrl.stage == 1
         assert new_stop is None
+
+
+# --------------------------------------------------------------------------- #
+# stage2_pct_trigger（OR 觸發）
+# --------------------------------------------------------------------------- #
+
+class TestStage2PctTrigger:
+    """%-based OR 觸發：peak_pct ≥ stage2_pct_trigger 時即使 progress_r < 1.2 也進 stage 2。"""
+
+    def test_default_disabled_legacy_behavior(self) -> None:
+        # 預設 stage2_pct_trigger=0 → 與舊行為一致（必須 progress_r >= 1.2 才進 stage 2）
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=90.0),  # R=10
+            params=TrailingStopParams(),  # stage2_pct_trigger=0
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        # peak_pct = 0.5%，progress_r = 0.5 < 1.2 → 不該進 stage 2
+        bar = _bar(o=100.0, h=100.5, l=99.5, c=100.5)
+        ctrl.update(bar, df, 0, current_stop=90.0)
+        assert ctrl.stage == 1
+
+    def test_pct_trigger_fires_when_pct_threshold_hit_first(self) -> None:
+        # R=10 (entry=100, stop=90)；progress_r=0.5 還沒到 1.2，但 peak_pct=0.5% ≥ 0.3%
+        params = TrailingStopParams(stage2_pct_trigger=0.003)
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=90.0),
+            params=params,
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        bar = _bar(o=100.0, h=100.5, l=99.5, c=100.5)  # high=100.5, peak_pct=0.5%
+        new_stop = ctrl.update(bar, df, 0, current_stop=90.0)
+        assert ctrl.stage == 2
+        # stage2 stop 仍走 R-based: entry*(1+2*0.0005) + 0.2*R = 100.1 + 2.0 = 102.1
+        assert new_stop == pytest.approx(102.1)
+
+    def test_short_pct_trigger(self) -> None:
+        params = TrailingStopParams(stage2_pct_trigger=0.003)
+        ctrl = TrailingStopController(
+            position=_short_position(entry=100.0, stop=110.0),  # R=10
+            params=params,
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        # low=99.5, peak_pct = (100-99.5)/100 = 0.5% ≥ 0.3% → 進 stage 2
+        bar = _bar(o=100.0, h=100.5, l=99.5, c=99.6)
+        new_stop = ctrl.update(bar, df, 0, current_stop=110.0)
+        assert ctrl.stage == 2
+        # stage2 stop（空）= 100*(1 - 2*0.0005) - 0.2*10 = 99.9 - 2.0 = 97.9
+        assert new_stop == pytest.approx(97.9)
+
+    def test_pct_trigger_below_threshold_no_fire(self) -> None:
+        # peak_pct = 0.2% < 0.3%，progress_r = 0.2 < 1.2 → 兩條件都不滿足
+        params = TrailingStopParams(stage2_pct_trigger=0.003)
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=90.0),
+            params=params,
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        bar = _bar(o=100.0, h=100.2, l=99.5, c=100.1)
+        ctrl.update(bar, df, 0, current_stop=90.0)
+        assert ctrl.stage == 1
+
+    def test_r_path_still_works_when_pct_path_disabled(self) -> None:
+        # stage2_pct_trigger=0；progress_r >= 1.2 仍照觸發
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),  # R=5
+            params=TrailingStopParams(stage2_pct_trigger=0.0),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        # high=106 → progress_r = 6/5 = 1.2 → 觸發
+        bar = _bar(o=100.0, h=106.0, l=99.5, c=105.0)
+        ctrl.update(bar, df, 0, current_stop=95.0)
+        assert ctrl.stage == 2

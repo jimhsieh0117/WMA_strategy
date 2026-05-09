@@ -119,6 +119,9 @@ class TrailingStopController:
         self.stage = 1
         # 追蹤歷史最大有利進度（單位 R），給 r_ladder 模式判斷觸發過的最高檔
         self.peak_progress_r = 0.0
+        # 追蹤歷史最大有利進度（價格相對 entry 的 fraction，例如 0.003 = 0.3%）。
+        # 用於 stage2_pct_trigger（OR 條件，與 R-based trigger 並行）。
+        self.peak_pct = 0.0
         self._transitions: list[StageTransition] = []
 
         logger.debug(
@@ -150,13 +153,22 @@ class TrailingStopController:
         Returns:
             新的止損價（要 ratchet）或 None（保持不動）。
         """
-        # 1. 用 bar 的有利方向極值衡量本根 K 達到的進度（多→high、空→low）
+        # 1. 用 bar 的有利方向極值衡量本根 K 達到的進度
+        # progress_r = (peak − entry) / effective_R；progress_pct = (peak − entry) / entry
         progress_r = self._compute_progress_r(bar)
+        progress_pct = self._compute_progress_pct(bar)
         if progress_r > self.peak_progress_r:
             self.peak_progress_r = progress_r
+        if progress_pct > self.peak_pct:
+            self.peak_pct = progress_pct
 
-        # 2. 階段推進（單向）
-        if self.stage == 1 and progress_r >= self.stage2_trigger:
+        # 2. 階段推進（單向）。Stage 1→2 額外支援 %-based OR 觸發。
+        pct_trigger = self.params.stage2_pct_trigger
+        stage2_fired = (
+            progress_r >= self.stage2_trigger
+            or (pct_trigger > 0 and progress_pct >= pct_trigger)
+        )
+        if self.stage == 1 and stage2_fired:
             self._transition(2, bar.timestamp, progress_r)
         if self.stage == 2 and progress_r >= self.stage3_trigger:
             self._transition(3, bar.timestamp, progress_r)
@@ -181,7 +193,7 @@ class TrailingStopController:
     # ----------------------------------------------------------------------- #
 
     def snapshot_runtime(self) -> dict:
-        """匯出 runtime 狀態（stage / peak_progress_r）。
+        """匯出 runtime 狀態（stage / peak_progress_r / peak_pct）。
 
         靜態欄位（entry_price / R / triggers）會由 constructor 從 Position 與 params
         重新推導，故無須序列化。
@@ -189,6 +201,7 @@ class TrailingStopController:
         return {
             "stage": int(self.stage),
             "peak_progress_r": float(self.peak_progress_r),
+            "peak_pct": float(self.peak_pct),
         }
 
     def restore_runtime(self, snapshot: dict) -> None:
@@ -199,8 +212,12 @@ class TrailingStopController:
         peak = float(snapshot["peak_progress_r"])
         if peak < 0:
             raise ValueError(f"peak_progress_r must be >= 0, got {peak}")
+        peak_pct = float(snapshot.get("peak_pct", 0.0))  # 舊 snapshot 容錯
+        if peak_pct < 0:
+            raise ValueError(f"peak_pct must be >= 0, got {peak_pct}")
         self.stage = stage
         self.peak_progress_r = peak
+        self.peak_pct = peak_pct
 
     # ----------------------------------------------------------------------- #
     # 內部：階段邏輯
@@ -215,6 +232,15 @@ class TrailingStopController:
         if self.direction is Direction.LONG:
             return (bar.high - self.entry_price) / self.effective_R
         return (self.entry_price - bar.low) / self.effective_R
+
+    def _compute_progress_pct(self, bar: Bar) -> float:
+        """目前最大有利移動的 % fraction（以 entry_price 為分母）。
+
+        多單 = (bar.high − entry) / entry；空單鏡像。供 stage2_pct_trigger OR 條件用。
+        """
+        if self.direction is Direction.LONG:
+            return (bar.high - self.entry_price) / self.entry_price
+        return (self.entry_price - bar.low) / self.entry_price
 
     def _transition(
         self, to_stage: int, ts: pd.Timestamp, progress_r: float

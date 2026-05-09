@@ -92,6 +92,7 @@ def run_single_strategy(
         stage2_normal_trigger_r=cfg.trailing.stage2_normal_trigger_r,
         stage2_abnormal_trigger_r=cfg.trailing.stage2_abnormal_trigger_r,
         stage2_buffer_r=cfg.trailing.stage2_buffer_r,
+        stage2_pct_trigger=cfg.trailing.stage2_pct_trigger,
         stage3_normal_trigger_r=cfg.trailing.stage3_normal_trigger_r,
         stage3_abnormal_trigger_r=cfg.trailing.stage3_abnormal_trigger_r,
         bollinger_period=cfg.trailing.bollinger_period,
