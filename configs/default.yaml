@@ -87,12 +87,18 @@ strategy:
     r_ladder_abnormal_trigger_offset: 0.6  # abnormal：5.6 觸發 → 鎖 5.0
 
     # ---- Early-exit（進場後 N 根 K 主動 cancel）----
-    # 觀測期最後一根 K 的有利浮盈 < min_peak_r × R 且 stage 仍為 1 → bar.close 平倉
-    # 實測：thr=0R 救 865 s1 但同時誤殺 143 s3 + 192 s2，net −29.74 USDT
-    # 預設關閉，保留開關供未來特定參數組合再試
+    # 觀測期最後一根 K 收盤後若 stage 仍為 1 且度量值 < 門檻 → bar.close 平倉
+    # metric:
+    #   peak  = 該 bar 最大有利浮盈 / R（多 = (high − entry)/R；空鏡像）
+    #   close = 該 bar 收盤相對 entry / R（多 = (close − entry)/R；可為負）
+    # 實測（2-yr IS, 15m, WMA 4/6）：
+    #   first_close_r 比 first_peak_r 更乾淨；close < −0.5R cut 24.6% s1 vs 4.7% s3 (5.2:1)
     early_exit_enabled:           false
     early_exit_observation_bars:  1
-    early_exit_min_peak_r:        0.0
+    early_exit_metric:            peak        # peak | peak_pct | close
+    early_exit_min_peak_r:        0.0         # peak     mode 門檻（R 單位）
+    early_exit_min_peak_pct:      0.0         # peak_pct mode 門檻（fraction，e.g. 0.001 = 0.1%）
+    early_exit_min_close_r:       -0.5        # close    mode 門檻（負值 = 收盤需高於 entry − 0.5R）
 
   # 進場訊號濾網（六根 K 實體比例閘門）
   #   mode:

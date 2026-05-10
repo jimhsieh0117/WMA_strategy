@@ -106,7 +106,10 @@ def run_single_strategy(
         r_ladder_abnormal_trigger_offset=cfg.trailing.r_ladder_abnormal_trigger_offset,
         early_exit_enabled=cfg.trailing.early_exit_enabled,
         early_exit_observation_bars=cfg.trailing.early_exit_observation_bars,
+        early_exit_metric=cfg.trailing.early_exit_metric,  # type: ignore[arg-type]
         early_exit_min_peak_r=cfg.trailing.early_exit_min_peak_r,
+        early_exit_min_peak_pct=cfg.trailing.early_exit_min_peak_pct,
+        early_exit_min_close_r=cfg.trailing.early_exit_min_close_r,
     )
     signal_filter = SignalFilterParams(
         mode=cfg.signal_filter.mode,  # type: ignore[arg-type]

@@ -127,6 +127,10 @@ class TrailingStopController:
         self.bars_observed = 0
         # 觀測 bar 當根 K 的有利進度（per-bar，非累積；給 early_exit 用）
         self._last_bar_progress_r = 0.0
+        # 觀測 bar 當根 K 的有利進度 fraction (per-bar peak_pct，給 peak_pct mode 用)
+        self._last_bar_progress_pct = 0.0
+        # 觀測 bar 當根 K 收盤相對 entry / R（close-mode early_exit 用，可為負）
+        self._last_bar_close_r = 0.0
         self._transitions: list[StageTransition] = []
 
         logger.debug(
@@ -165,7 +169,9 @@ class TrailingStopController:
         # progress_r = (peak − entry) / effective_R；progress_pct = (peak − entry) / entry
         progress_r = self._compute_progress_r(bar)
         progress_pct = self._compute_progress_pct(bar)
-        self._last_bar_progress_r = progress_r  # per-bar，不累積（給 early_exit 用）
+        self._last_bar_progress_r = progress_r  # per-bar，不累積（給 early_exit peak mode 用）
+        self._last_bar_progress_pct = progress_pct  # per-bar peak_pct，給 peak_pct mode 用
+        self._last_bar_close_r = self._compute_close_r(bar)  # close mode 用，可為負
         if progress_r > self.peak_progress_r:
             self.peak_progress_r = progress_r
         if progress_pct > self.peak_pct:
@@ -193,13 +199,16 @@ class TrailingStopController:
         return None
 
     def should_early_exit(self) -> bool:
-        """觀測期最後一根 K 收盤時，若該根 K 的浮盈 < 門檻 → 提早 cancel。
+        """觀測期最後一根 K 收盤時，若度量值 < 門檻 → 提早 cancel。
 
         條件（須全部滿足）：
         1. ``early_exit_enabled`` = True
         2. ``stage == 1``（已晉級則交給 trailing 接手）
         3. ``bars_observed == observation_bars + 1``（剛好結束觀測期）
-        4. 該根 K 的 progress_r < ``min_peak_r``
+        4. 依 ``early_exit_metric`` 取對應度量並與門檻比較（嚴格 ``<``）：
+            - peak     : 該 bar per-bar progress_r   < min_peak_r
+            - peak_pct : 該 bar per-bar progress_pct < min_peak_pct
+            - close    : 該 bar close_r              < min_close_r
 
         engine 應在 ``update()`` 之後呼叫此方法。回傳 True 表示「該 bar.close 主動平倉」。
         """
@@ -210,6 +219,11 @@ class TrailingStopController:
         # observation_bars=1 → bar[i+1] 那次 update（bars_observed=2）做檢查
         if self.bars_observed != self.params.early_exit_observation_bars + 1:
             return False
+        metric = self.params.early_exit_metric
+        if metric == "close":
+            return self._last_bar_close_r < self.params.early_exit_min_close_r
+        if metric == "peak_pct":
+            return self._last_bar_progress_pct < self.params.early_exit_min_peak_pct
         return self._last_bar_progress_r < self.params.early_exit_min_peak_r
 
     @property
@@ -266,6 +280,16 @@ class TrailingStopController:
         if self.direction is Direction.LONG:
             return (bar.high - self.entry_price) / self.effective_R
         return (self.entry_price - bar.low) / self.effective_R
+
+    def _compute_close_r(self, bar: Bar) -> float:
+        """收盤相對 entry 的有利方向距離 / R（可為負）。
+
+        多單 = (close − entry) / R；空單鏡像。用於 early_exit close-mode；
+        分母用實際 R（與 stage 1 stop 同尺度）。
+        """
+        if self.direction is Direction.LONG:
+            return (float(bar.close) - self.entry_price) / self.R
+        return (self.entry_price - float(bar.close)) / self.R
 
     def _compute_progress_pct(self, bar: Bar) -> float:
         """目前最大有利移動的 % fraction（以 entry_price 為分母）。

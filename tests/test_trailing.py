@@ -722,3 +722,142 @@ class TestEarlyExitCancel:
         assert ctrl.should_early_exit() is False  # bars_observed=2，但觀測點是 3
         ctrl.update(_bar(99.5, 99.4, 99.2, 99.3), df, 2, current_stop=95.0)
         assert ctrl.should_early_exit() is True   # bars_observed=3
+
+
+class TestEarlyExitCancelCloseMode:
+    """early_exit_metric='close' 模式：以收盤位置 / R 判定。"""
+
+    def test_long_close_below_threshold_triggers(self) -> None:
+        # entry=100, stop=95, R=5；threshold=-0.5R → 收盤需 ≥ 97.5
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_metric="close",
+                early_exit_min_close_r=-0.5,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.5, 100.0), df, 0, current_stop=95.0)
+        assert ctrl.should_early_exit() is False  # 還沒到觀測點
+        # bar[i+1] close=97.0 → close_r = (97 - 100) / 5 = -0.6 < -0.5 → cancel
+        ctrl.update(_bar(99.5, 99.5, 96.5, 97.0), df, 1, current_stop=95.0)
+        assert ctrl.should_early_exit() is True
+
+    def test_long_close_above_threshold_no_cancel(self) -> None:
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_metric="close",
+                early_exit_min_close_r=-0.5,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.5, 100.0), df, 0, current_stop=95.0)
+        # close=98 → close_r = -0.4 ≥ -0.5 → no cancel（即便 bar 內曾跌到 96）
+        ctrl.update(_bar(99.5, 100.0, 96.0, 98.0), df, 1, current_stop=95.0)
+        assert ctrl.should_early_exit() is False
+
+    def test_short_close_above_threshold_triggers(self) -> None:
+        # SHORT entry=100, stop=105, R=5；threshold=-0.5R → close 需 ≤ 102.5
+        ctrl = TrailingStopController(
+            position=_short_position(entry=100.0, stop=105.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_metric="close",
+                early_exit_min_close_r=-0.5,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.5, 100.0), df, 0, current_stop=105.0)
+        # close=103 → close_r = (100 - 103)/5 = -0.6 < -0.5 → cancel
+        ctrl.update(_bar(100.0, 103.5, 99.8, 103.0), df, 1, current_stop=105.0)
+        assert ctrl.should_early_exit() is True
+
+    def test_close_mode_ignores_peak(self) -> None:
+        # peak 達 +1R 但 close 仍低於 threshold → close mode 應觸發 cancel
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_metric="close",
+                early_exit_min_close_r=0.0,  # 收盤需 ≥ entry
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.5, 100.0), df, 0, current_stop=95.0)
+        # 但本 bar 進場後 stage 2 trigger=1.2R → high=106 已 = 1.2R 會晉級！
+        # 改用 high=104（progress_r=0.8R < 1.2R 不晉級），但 close=99 < 100 → cancel
+        ctrl.update(_bar(99.5, 104.0, 99.0, 99.0), df, 1, current_stop=95.0)
+        assert ctrl.stage == 1
+        assert ctrl.should_early_exit() is True
+
+    def test_invalid_metric_rejected(self) -> None:
+        with pytest.raises(Exception):
+            TrailingStopParams(early_exit_metric="invalid")  # type: ignore[arg-type]
+
+
+class TestEarlyExitCancelPeakPctMode:
+    """early_exit_metric='peak_pct' 模式：以 per-bar (high − entry)/entry 判定。"""
+
+    def test_long_low_peak_pct_triggers(self) -> None:
+        # entry=100；threshold=0.002 (0.2%) → bar 內 high 需 ≥ 100.2
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_metric="peak_pct",
+                early_exit_min_peak_pct=0.002,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.5, 100.0), df, 0, current_stop=95.0)
+        # bar[i+1] high=100.15 → progress_pct = 0.0015 < 0.002 → cancel
+        ctrl.update(_bar(100.0, 100.15, 99.5, 100.0), df, 1, current_stop=95.0)
+        assert ctrl.should_early_exit() is True
+
+    def test_long_high_peak_pct_no_cancel(self) -> None:
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_metric="peak_pct",
+                early_exit_min_peak_pct=0.002,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.5, 100.0), df, 0, current_stop=95.0)
+        # bar[i+1] high=100.25 → progress_pct = 0.0025 ≥ 0.002 → no cancel
+        ctrl.update(_bar(100.0, 100.25, 99.5, 100.0), df, 1, current_stop=95.0)
+        assert ctrl.should_early_exit() is False
+
+    def test_short_peak_pct_mirror(self) -> None:
+        # SHORT entry=100；threshold=0.002 → bar low 需 ≤ 99.8
+        ctrl = TrailingStopController(
+            position=_short_position(entry=100.0, stop=105.0),
+            params=TrailingStopParams(
+                early_exit_enabled=True,
+                early_exit_observation_bars=1,
+                early_exit_metric="peak_pct",
+                early_exit_min_peak_pct=0.002,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(3)
+        ctrl.update(_bar(100.0, 100.5, 99.7, 100.0), df, 0, current_stop=105.0)
+        # bar[i+1] low=99.85 → progress_pct = (100-99.85)/100 = 0.0015 < 0.002 → cancel
+        ctrl.update(_bar(100.0, 100.4, 99.85, 100.3), df, 1, current_stop=105.0)
+        assert ctrl.should_early_exit() is True

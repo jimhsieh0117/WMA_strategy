@@ -63,7 +63,10 @@ class TrailingConfig:
     # early_exit
     early_exit_enabled: bool = False
     early_exit_observation_bars: int = 1
+    early_exit_metric: str = "peak"   # "peak" | "peak_pct" | "close"
     early_exit_min_peak_r: float = 0.0
+    early_exit_min_peak_pct: float = 0.0
+    early_exit_min_close_r: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -246,8 +249,15 @@ def load_config(path: str | Path) -> FullConfig:
         early_exit_observation_bars=int(
             trailing_raw.get("early_exit_observation_bars", 1)
         ),
+        early_exit_metric=str(trailing_raw.get("early_exit_metric", "peak")),
         early_exit_min_peak_r=float(
             trailing_raw.get("early_exit_min_peak_r", 0.0)
+        ),
+        early_exit_min_peak_pct=float(
+            trailing_raw.get("early_exit_min_peak_pct", 0.0)
+        ),
+        early_exit_min_close_r=float(
+            trailing_raw.get("early_exit_min_close_r", 0.0)
         ),
     )
 

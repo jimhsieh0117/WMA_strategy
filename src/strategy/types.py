@@ -29,6 +29,13 @@ SignalFilterMode = Literal["off", "body_sum", "body_sq_sum"]
 VALID_SIGNAL_FILTER_MODES: tuple[str, ...] = ("off", "body_sum", "body_sq_sum")
 VALID_SIGNAL_FILTER_SOURCES: tuple[str, ...] = ("raw", "ha")
 
+# Early-exit 度量模式：
+#   peak     = 觀測 bar 的「極值」/ R         (多 = (high−entry)/R；空鏡像)
+#   peak_pct = 觀測 bar 的「極值」/ entry      (多 = (high−entry)/entry；空鏡像)
+#   close    = 觀測 bar 的「收盤」相對 entry / R (多 = (close−entry)/R；可為負)
+EarlyExitMetric = Literal["peak", "peak_pct", "close"]
+VALID_EARLY_EXIT_METRICS: tuple[str, ...] = ("peak", "peak_pct", "close")
+
 
 # --------------------------------------------------------------------------- #
 # 訊號濾網（進場前 N 根 K 線實體比例閘門）
@@ -129,12 +136,21 @@ class TrailingStopParams:
     r_ladder_abnormal_trigger_offset: float = 0.6
 
     # ---- Early-exit（進場後 N 根 K 主動 cancel）----
-    # 機制：觀測期最後一根 K 收盤時若該根 K 的有利浮盈 < min_peak_r × R 且 stage 仍為 1，
+    # 機制：觀測期最後一根 K 收盤時若 stage 仍為 1 且該根 K 的指定度量低於門檻，
     # 該 bar.close 主動平倉（exit_reason="EARLY_CANCEL"，final_stage=1）。
-    # observation_bars=1 表示「進場後 1 根 K」（與 analyze_first_bar_response.py 一致）。
+    # observation_bars=1 表示「進場後 1 根 K」。
+    #
+    # metric:
+    #   peak     = 該 bar 最大有利浮盈 / R         (多 = (high−entry)/R；空鏡像)
+    #   peak_pct = 該 bar 最大有利浮盈 / entry     (多 = (high−entry)/entry；空鏡像)
+    #   close    = 該 bar 收盤相對 entry / R       (多 = (close−entry)/R；可為負)
+    # 切換 metric 時請設好對應的 threshold；其他 threshold 不會被使用。
     early_exit_enabled: bool = False
     early_exit_observation_bars: int = 1
+    early_exit_metric: EarlyExitMetric = "peak"
     early_exit_min_peak_r: float = 0.0
+    early_exit_min_peak_pct: float = 0.0
+    early_exit_min_close_r: float = 0.0
 
     def __post_init__(self) -> None:
         for name, val, low_ok in [
@@ -210,6 +226,11 @@ class TrailingStopParams:
             raise ConfigError(
                 f"early_exit_observation_bars must be int >= 0, "
                 f"got {self.early_exit_observation_bars}"
+            )
+        if self.early_exit_metric not in VALID_EARLY_EXIT_METRICS:
+            raise ConfigError(
+                f"early_exit_metric must be one of {VALID_EARLY_EXIT_METRICS}, "
+                f"got {self.early_exit_metric!r}"
             )
 
 
