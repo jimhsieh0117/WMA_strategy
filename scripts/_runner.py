@@ -145,6 +145,7 @@ def run_single_strategy(
         allow_pyramiding=cfg.allow_pyramiding,
         leverage_cap=cfg.leverage_cap,
         r_min_pct=cfg.r_min_pct,
+        entry_hour_blacklist=cfg.entry_hour_blacklist,
         force_close_at_end=cfg.force_close_at_end,
     )
 

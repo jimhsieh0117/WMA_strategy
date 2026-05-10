@@ -48,6 +48,10 @@ class EngineConfig:
     # R/entry_price 比例下限。低於此比例 → 視為「噪音 R」拒絕該筆進場
     # （手續費 / 滑點吃光收益）。0 = 關閉。
     r_min_pct: float = 0.0
+    # 進場時段黑名單（UTC，0..23）。fill bar 的 hour 命中此 set → 拒絕該筆進場。
+    # 空 tuple = 不啟用。判斷對象為 fill bar（pending 訊號被執行的 bar），
+    # 與 analyze_day_hour.py 的 entry_ts 一致。
+    entry_hour_blacklist: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if self.sizing_mode not in ("pct", "risk"):
@@ -69,6 +73,15 @@ class EngineConfig:
         if self.r_min_pct < 0:
             raise ConfigError(
                 f"r_min_pct must be >= 0, got {self.r_min_pct}"
+            )
+        for h in self.entry_hour_blacklist:
+            if not isinstance(h, int) or isinstance(h, bool) or not 0 <= h <= 23:
+                raise ConfigError(
+                    f"entry_hour_blacklist 元素必須為 0..23 整數，got {h!r}"
+                )
+        if len(set(self.entry_hour_blacklist)) != len(self.entry_hour_blacklist):
+            raise ConfigError(
+                f"entry_hour_blacklist 含重複元素：{self.entry_hour_blacklist}"
             )
 
 

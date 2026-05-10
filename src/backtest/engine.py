@@ -95,6 +95,17 @@ def run_backtest(
         row = df.iloc[i]
         bar = Bar.from_row(ts, row)
 
+        # 進場時段黑名單：fill bar 的 hour 命中 → 拒絕 pending 並清除（fall-through 到 Step 2）
+        if (pending_signal is not None
+                and config.entry_hour_blacklist
+                and ts.hour in config.entry_hour_blacklist):
+            signals_unfilled += 1
+            logger.debug(
+                "SKIP_FILL %s: hour %d in entry_hour_blacklist",
+                pending_signal.direction, ts.hour,
+            )
+            pending_signal = None
+
         # === Step 1: 撮合 pending limit 單於本根 K 線開盤 ===
         if pending_signal is not None:
             limit_price = _compute_limit_price(

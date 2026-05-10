@@ -39,6 +39,14 @@ account:
   #   0 = 關閉；常用值 0.0012（0.12%，15m ETH 經驗值）
   r_min_pct: 0.0022
 
+  # 進場時段黑名單（UTC，0..23）。命中 → 該筆 pending 被拒絕。
+  # 判斷對象為「fill bar 的 hour」（pending 撮合所在的 K 線），與 analyze_day_hour.py 一致。
+  # 實測（2-yr IS, 15m, WMA 4/6）：
+  #   00 UTC: s3% 9.74% / avg_pnl −0.39
+  #   12 UTC: s3% 12.12% / avg_pnl −0.37（兩個整點顯著低於 baseline 18.87%）
+  # 空 list = 不啟用
+  entry_hour_blacklist: [0, 12]
+
 fees:
   taker_fee_rate: 0.0005    # 0.05%
   maker_fee_rate: 0.0002    # 0.02%

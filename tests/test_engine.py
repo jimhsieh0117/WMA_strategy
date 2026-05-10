@@ -167,6 +167,43 @@ class TestEngineRiskSizing:
         assert result.signals_filled == 0
         assert len(result.trades) == 0
 
+    def test_entry_hour_blacklist_rejects_fill(self) -> None:
+        # df 從 2024-01-01 00:00 開始 5min freq；bar 11 = 00:55 → hour=0 命中黑名單
+        df = make_test_df(20)
+        acct, broker = _account_and_broker()
+        strat = MockStrategy(Direction.LONG, entry_at=10, initial_stop=95.0)
+        cfg = EngineConfig(
+            sizing_mode="risk", risk_per_trade_usdt=1.0,
+            allow_pyramiding=True, leverage_cap=100.0,
+            entry_hour_blacklist=(0,),
+        )
+        result = run_backtest(df, strat, acct, broker, cfg)
+        assert result.signals_emitted == 1
+        assert result.signals_filled == 0
+        assert result.signals_unfilled >= 1
+        assert len(result.trades) == 0
+
+    def test_entry_hour_blacklist_allows_when_not_in_set(self) -> None:
+        df = make_test_df(20)
+        acct, broker = _account_and_broker()
+        strat = MockStrategy(Direction.LONG, entry_at=10, initial_stop=95.0)
+        cfg = EngineConfig(
+            sizing_mode="risk", risk_per_trade_usdt=1.0,
+            allow_pyramiding=True, leverage_cap=100.0,
+            entry_hour_blacklist=(5, 12, 23),  # hour 0 不在內
+        )
+        result = run_backtest(df, strat, acct, broker, cfg)
+        assert result.signals_filled == 1
+
+    def test_entry_hour_blacklist_validation(self) -> None:
+        from src.utils.exceptions import ConfigError
+        with pytest.raises(ConfigError):
+            EngineConfig(entry_hour_blacklist=(24,))   # > 23
+        with pytest.raises(ConfigError):
+            EngineConfig(entry_hour_blacklist=(-1,))   # < 0
+        with pytest.raises(ConfigError):
+            EngineConfig(entry_hour_blacklist=(0, 0))  # 重複
+
     def test_risk_mode_rejects_when_overleveraged(self) -> None:
         df = make_test_df(20)
         # 把 stop 設得極接近 entry → R 太小 → notional 會爆

@@ -106,6 +106,7 @@ class FullConfig:
     allow_pyramiding: bool
     leverage_cap: float
     r_min_pct: float
+    entry_hour_blacklist: tuple[int, ...]
 
     # fees
     taker_fee_rate: float
@@ -203,6 +204,18 @@ def load_config(path: str | Path) -> FullConfig:
         raise ConfigError(
             f"account.r_min_pct must be >= 0, got {r_min_pct}"
         )
+
+    raw_blacklist = account.get("entry_hour_blacklist", []) or []
+    if not isinstance(raw_blacklist, list):
+        raise ConfigError(
+            f"account.entry_hour_blacklist must be a list, got {type(raw_blacklist).__name__}"
+        )
+    entry_hour_blacklist: tuple[int, ...] = tuple(int(h) for h in raw_blacklist)
+    for h in entry_hour_blacklist:
+        if not 0 <= h <= 23:
+            raise ConfigError(
+                f"account.entry_hour_blacklist 元素必須為 0..23，got {h}"
+            )
 
     # ---- fees ----
     taker = float(fees["taker_fee_rate"])
@@ -334,6 +347,7 @@ def load_config(path: str | Path) -> FullConfig:
         allow_pyramiding=allow_pyramiding,
         leverage_cap=leverage_cap,
         r_min_pct=r_min_pct,
+        entry_hour_blacklist=entry_hour_blacklist,
         taker_fee_rate=taker,
         maker_fee_rate=maker,
         slippage_pct=slip,
