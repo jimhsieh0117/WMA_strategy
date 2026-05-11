@@ -2,9 +2,7 @@
 
 用法：
     .venv/bin/python scripts/view_chart.py [--sample is|oos] [--port 8050]
-                                            [--panels bollinger ha_wma volume wavetrend]
-
-預設根據 ``cfg.entry_source`` 決定 WMA overlay 是用 raw 還是 HA 版本。
+                                            [--panels bollinger wma volume wavetrend]
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ from src.metrics.merger import build_merged_result  # noqa: E402
 from src.strategy.base import prepare_indicators  # noqa: E402
 from src.strategy.types import StrategyParams, TrailingStopParams  # noqa: E402
 from src.utils.config import load_config  # noqa: E402
-from src.viewer.indicators import REGISTRY, default_panels_for  # noqa: E402
+from src.viewer.indicators import REGISTRY, default_panels  # noqa: E402
 from src.viewer.server import build_app  # noqa: E402
 
 
@@ -43,7 +41,7 @@ def main() -> None:
         "--panels", nargs="*", default=None,
         help=(
             "指標**初始勾選**清單；server 永遠載入全部指標，"
-            f"使用者可在網頁 UI 切換。預設依 entry_source 自動選。"
+            f"使用者可在網頁 UI 切換。"
             f"可選: {sorted(REGISTRY)}"
         ),
     )
@@ -58,7 +56,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    initial_enabled = args.panels or default_panels_for(cfg.entry_source)
+    initial_enabled = args.panels or default_panels()
     for name in initial_enabled:
         if name not in REGISTRY:
             raise SystemExit(
@@ -95,7 +93,6 @@ def main() -> None:
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
         wma_slow=cfg.wma_slow,
-        entry_source=cfg.entry_source,  # type: ignore[arg-type]
         trailing=trailing,
     )
     augmented = prepare_indicators(df, params)

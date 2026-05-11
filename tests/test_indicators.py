@@ -1,4 +1,4 @@
-"""indicators (HA / WMA / ATR) 單元測試。
+"""indicators (WMA / ATR) 單元測試。
 
 重點：
 1. 數值正確性（與手算對照）
@@ -13,79 +13,8 @@ import pandas as pd
 import pytest
 
 from src.indicators.atr import atr, true_range
-from src.indicators.heikin_ashi import HA_COLUMNS, compute_ha
 from src.indicators.wma import wma
 from src.utils.exceptions import DataIntegrityError
-
-
-class TestHeikinAshi:
-    def test_basic_values(self, simple_ohlcv: pd.DataFrame) -> None:
-        ha = compute_ha(simple_ohlcv)
-        # HA_Close = (O+H+L+C)/4
-        assert ha["ha_close"].iloc[0] == pytest.approx((100 + 102 + 99 + 101) / 4)
-        assert ha["ha_close"].iloc[1] == pytest.approx((101 + 103 + 100 + 102) / 4)
-
-    def test_ha_open_seed(self, simple_ohlcv: pd.DataFrame) -> None:
-        ha = compute_ha(simple_ohlcv)
-        # 首根：HA_Open = (Open + Close) / 2
-        assert ha["ha_open"].iloc[0] == pytest.approx((100 + 101) / 2)
-
-    def test_ha_open_recursion(self, simple_ohlcv: pd.DataFrame) -> None:
-        ha = compute_ha(simple_ohlcv)
-        # HA_Open[t] = (HA_Open[t-1] + HA_Close[t-1]) / 2
-        for t in range(1, len(ha)):
-            expected = (ha["ha_open"].iloc[t - 1] + ha["ha_close"].iloc[t - 1]) / 2
-            assert ha["ha_open"].iloc[t] == pytest.approx(expected)
-
-    def test_ha_high_low_envelope(self, random_ohlcv: pd.DataFrame) -> None:
-        ha = compute_ha(random_ohlcv)
-        # HA_High >= max(High, HA_Open, HA_Close)
-        assert (ha["ha_high"] >= ha["high"]).all()
-        assert (ha["ha_high"] >= ha["ha_open"]).all()
-        assert (ha["ha_high"] >= ha["ha_close"]).all()
-        # HA_Low <= min(Low, HA_Open, HA_Close)
-        assert (ha["ha_low"] <= ha["low"]).all()
-        assert (ha["ha_low"] <= ha["ha_open"]).all()
-        assert (ha["ha_low"] <= ha["ha_close"]).all()
-
-    def test_no_lookahead(self, random_ohlcv: pd.DataFrame) -> None:
-        """截斷重算應與原序列前段完全一致 → 證明無 look-ahead。"""
-        full = compute_ha(random_ohlcv)
-        for n in (10, 50, 100, 199):
-            partial = compute_ha(random_ohlcv.iloc[:n])
-            for col in HA_COLUMNS:
-                np.testing.assert_array_equal(
-                    full[col].iloc[:n].to_numpy(),
-                    partial[col].to_numpy(),
-                    err_msg=f"look-ahead detected in {col} at n={n}",
-                )
-
-    def test_empty_input(self) -> None:
-        idx = pd.DatetimeIndex([])
-        df = pd.DataFrame(
-            {"open": [], "high": [], "low": [], "close": [], "volume": []},
-            index=idx,
-        )
-        ha = compute_ha(df)
-        for col in HA_COLUMNS:
-            assert col in ha.columns
-            assert len(ha[col]) == 0
-
-    def test_missing_column_raises(self, simple_ohlcv: pd.DataFrame) -> None:
-        bad = simple_ohlcv.drop(columns=["close"])
-        with pytest.raises(DataIntegrityError, match="missing"):
-            compute_ha(bad)
-
-    def test_non_datetime_index_raises(self, simple_ohlcv: pd.DataFrame) -> None:
-        bad = simple_ohlcv.reset_index(drop=True)
-        with pytest.raises(DataIntegrityError, match="DatetimeIndex"):
-            compute_ha(bad)
-
-    def test_inconsistent_ohlc_raises(self, simple_ohlcv: pd.DataFrame) -> None:
-        bad = simple_ohlcv.copy()
-        bad.loc[bad.index[0], "high"] = 50  # high < low
-        with pytest.raises(DataIntegrityError, match="OHLC consistency"):
-            compute_ha(bad)
 
 
 class TestWMA:

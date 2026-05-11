@@ -53,11 +53,9 @@ fees:
   slippage_pct:   0.0003    # 0.03%
 
 strategy:
-  # 進場條件
+  # 進場條件（一律使用原始 K 線）
   wma_fast: 4
   wma_slow: 6
-  entry_source: raw   # ha = Heikin-Ashi 平均K（預設）；raw = 原始 K 線
-                     # 切換只影響「進場訊號」用哪個 K，止損永遠用原始 K
 
   # 三階段止損（ARCHITECTURE.md §11）
   trailing:
@@ -114,13 +112,11 @@ strategy:
   #     body_sum     = 線性實體比例：陽K長度合 / 全部長度合
   #     body_sq_sum  = 平方加權：陽K長度² 合 / 全部長度² 合（大實體影響加倍）
   #   threshold: LONG 需 ratio ≥ threshold；SHORT 需 ratio ≤ (1 − threshold)
-  #   window: 進場前回看根數（含訊號 K 自己）
-  #   source: raw 用原始 K，ha 用 Heikin-Ashi
+  #   window: 進場前回看根數（含訊號 K 自己，一律用原始 K）
   signal_filter:
     mode: body_sum
     window: 6
     threshold: 0.60
-    source: raw
 
   # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響（trigger-only 版本）
   #   mode:

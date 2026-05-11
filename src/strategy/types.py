@@ -17,17 +17,12 @@ from src.utils.exceptions import ConfigError
 from src.utils.types import Direction
 
 
-# 進場訊號可使用的 K 線來源
-EntrySource = Literal["ha", "raw"]
-VALID_ENTRY_SOURCES: tuple[str, ...] = ("ha", "raw")
-
 # Signal filter modes
 #   off          = 不啟用
 #   body_sum     = 線性實體比例（陽K長度合 / 全部長度合）
 #   body_sq_sum  = 平方加權（陽K長度² 合 / 全部長度² 合）— 大實體影響加倍
 SignalFilterMode = Literal["off", "body_sum", "body_sq_sum"]
 VALID_SIGNAL_FILTER_MODES: tuple[str, ...] = ("off", "body_sum", "body_sq_sum")
-VALID_SIGNAL_FILTER_SOURCES: tuple[str, ...] = ("raw", "ha")
 
 # Early-exit 度量模式：
 #   peak     = 觀測 bar 的「極值」/ R         (多 = (high−entry)/R；空鏡像)
@@ -56,18 +51,12 @@ class SignalFilterParams:
     mode: SignalFilterMode = "off"
     window: int = 6
     threshold: float = 0.60
-    source: str = "raw"  # "raw" | "ha"
 
     def __post_init__(self) -> None:
         if self.mode not in VALID_SIGNAL_FILTER_MODES:
             raise ConfigError(
                 f"signal_filter.mode must be one of {VALID_SIGNAL_FILTER_MODES}, "
                 f"got {self.mode!r}"
-            )
-        if self.source not in VALID_SIGNAL_FILTER_SOURCES:
-            raise ConfigError(
-                f"signal_filter.source must be one of {VALID_SIGNAL_FILTER_SOURCES}, "
-                f"got {self.source!r}"
             )
         if not isinstance(self.window, int) or isinstance(self.window, bool) or self.window < 1:
             raise ConfigError(f"signal_filter.window must be int >= 1, got {self.window}")
@@ -278,12 +267,6 @@ class StrategyParams:
     # ---- 進場條件 ----
     wma_fast: int = 2
     wma_slow: int = 4
-    entry_source: EntrySource = "ha"
-    """進場訊號使用的 K 線來源：
-        "ha"  = Heikin-Ashi 平均 K 線（預設、原本設計）
-        "raw" = 原始 K 線（OHLC + close）
-    止損計算（三階段）始終使用原始 K 線，不受此參數影響。
-    """
 
     # ---- 拖曳止損子設定 ----
     trailing: TrailingStopParams = field(default_factory=TrailingStopParams)
@@ -302,11 +285,6 @@ class StrategyParams:
         if self.wma_fast >= self.wma_slow:
             raise ConfigError(
                 f"wma_fast ({self.wma_fast}) must be < wma_slow ({self.wma_slow})"
-            )
-        if self.entry_source not in VALID_ENTRY_SOURCES:
-            raise ConfigError(
-                f"entry_source must be one of {VALID_ENTRY_SOURCES}, "
-                f"got {self.entry_source!r}"
             )
 
     @property

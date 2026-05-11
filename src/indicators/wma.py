@@ -22,7 +22,7 @@ def wma(series: pd.Series, period: int) -> pd.Series:
     在大序列（百萬根 K）下仍能即時運算。
 
     Args:
-        series: 輸入時間序列（通常為 HA_Close）。
+        series: 輸入時間序列（通常為 close）。
         period: WMA 週期，正整數。
 
     Returns:

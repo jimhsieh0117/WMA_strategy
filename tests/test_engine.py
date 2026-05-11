@@ -42,8 +42,6 @@ def make_test_df(
         {
             "open": opens, "high": highs, "low": lows, "close": closes,
             "volume": [10.0] * n,
-            "ha_open": closes, "ha_high": highs, "ha_low": lows, "ha_close": closes,
-            "ha_wma_fast": closes, "ha_wma_slow": closes,
             "wma_fast": closes, "wma_slow": closes,
             "bb_middle": closes,
             "bb_upper": [bb_upper_const] * n,

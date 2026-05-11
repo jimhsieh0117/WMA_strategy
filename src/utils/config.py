@@ -82,7 +82,6 @@ class SignalFilterConfig:
     mode: str = "off"          # "off" | "body_sum" | "body_sq_sum"
     window: int = 6
     threshold: float = 0.60
-    source: str = "raw"        # "raw" | "ha"
 
 
 @dataclass(frozen=True)
@@ -116,7 +115,6 @@ class FullConfig:
     # strategy: entry
     wma_fast: int
     wma_slow: int
-    entry_source: str   # "ha" | "raw"
 
     # strategy: trailing stop
     trailing: TrailingConfig
@@ -138,10 +136,8 @@ class FullConfig:
 
 _VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1H", "4H"}
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
-_VALID_ENTRY_SOURCES = {"ha", "raw"}
 _VALID_SIZING_MODES = {"pct", "risk"}
 _VALID_SIGNAL_FILTER_MODES = {"off", "body_sum", "body_sq_sum"}
-_VALID_SIGNAL_FILTER_SOURCES = {"raw", "ha"}
 _VALID_R_CAP_MODES = {"off", "rolling_avg"}
 
 
@@ -225,12 +221,6 @@ def load_config(path: str | Path) -> FullConfig:
     # ---- strategy: entry ----
     wma_fast = int(strategy["wma_fast"])
     wma_slow = int(strategy["wma_slow"])
-    entry_source = str(strategy.get("entry_source", "ha")).lower()
-    if entry_source not in _VALID_ENTRY_SOURCES:
-        raise ConfigError(
-            f"strategy.entry_source '{entry_source}' invalid; "
-            f"must be one of {sorted(_VALID_ENTRY_SOURCES)}"
-        )
 
     # ---- strategy: trailing ----
     trailing_raw = strategy.get("trailing", {})
@@ -288,12 +278,6 @@ def load_config(path: str | Path) -> FullConfig:
             f"strategy.signal_filter.mode '{sf_mode}' invalid; "
             f"must be one of {sorted(_VALID_SIGNAL_FILTER_MODES)}"
         )
-    sf_source = str(sf_raw.get("source", "raw")).lower()
-    if sf_source not in _VALID_SIGNAL_FILTER_SOURCES:
-        raise ConfigError(
-            f"strategy.signal_filter.source '{sf_source}' invalid; "
-            f"must be one of {sorted(_VALID_SIGNAL_FILTER_SOURCES)}"
-        )
     sf_window = int(sf_raw.get("window", 6))
     if sf_window < 1:
         raise ConfigError(f"strategy.signal_filter.window must be >= 1, got {sf_window}")
@@ -303,7 +287,7 @@ def load_config(path: str | Path) -> FullConfig:
             f"strategy.signal_filter.threshold must be in (0, 1), got {sf_threshold}"
         )
     signal_filter = SignalFilterConfig(
-        mode=sf_mode, window=sf_window, threshold=sf_threshold, source=sf_source,
+        mode=sf_mode, window=sf_window, threshold=sf_threshold,
     )
 
     # ---- strategy: r_cap ----
@@ -353,7 +337,6 @@ def load_config(path: str | Path) -> FullConfig:
         slippage_pct=slip,
         wma_fast=wma_fast,
         wma_slow=wma_slow,
-        entry_source=entry_source,
         trailing=trailing,
         signal_filter=signal_filter,
         r_cap=r_cap,

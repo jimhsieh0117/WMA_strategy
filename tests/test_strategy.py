@@ -29,11 +29,8 @@ from src.utils.types import Direction
 def make_augmented(
     n: int,
     *,
-    ha_close: list[float] | None = None,
-    ha_wma_fast: list[float] | None = None,
-    ha_wma_slow: list[float] | None = None,
-    raw_wma_fast: list[float] | None = None,
-    raw_wma_slow: list[float] | None = None,
+    wma_fast: list[float] | None = None,
+    wma_slow: list[float] | None = None,
     high: list[float] | None = None,
     low: list[float] | None = None,
     close: list[float] | None = None,
@@ -42,19 +39,12 @@ def make_augmented(
 ) -> pd.DataFrame:
     """構造已含全部指標欄的 DataFrame，用於直接測試策略邏輯。"""
     idx = pd.date_range("2024-01-01", periods=n, freq="5min")
-    if ha_close is None:
-        ha_close = [100.0] * n
-    if ha_wma_fast is None:
-        ha_wma_fast = ha_close[:]
-    if ha_wma_slow is None:
-        ha_wma_slow = ha_close[:]
     if close is None:
-        close = ha_close[:]
-    # 若沒指定 raw WMA → 預設等於 close（與 HA 路線一樣的構造邏輯）
-    if raw_wma_fast is None:
-        raw_wma_fast = close[:]
-    if raw_wma_slow is None:
-        raw_wma_slow = close[:]
+        close = [100.0] * n
+    if wma_fast is None:
+        wma_fast = close[:]
+    if wma_slow is None:
+        wma_slow = close[:]
     if high is None:
         high = [c + 1.0 for c in close]
     if low is None:
@@ -71,14 +61,8 @@ def make_augmented(
             "low": low,
             "close": close,
             "volume": [1.0] * n,
-            "ha_open": ha_close,
-            "ha_high": [c + 0.5 for c in ha_close],
-            "ha_low": [c - 0.5 for c in ha_close],
-            "ha_close": ha_close,
-            "ha_wma_fast": ha_wma_fast,
-            "ha_wma_slow": ha_wma_slow,
-            "wma_fast": raw_wma_fast,
-            "wma_slow": raw_wma_slow,
+            "wma_fast": wma_fast,
+            "wma_slow": wma_slow,
             "bb_middle": close,
             "bb_upper": bb_upper,
             "bb_lower": bb_lower,
@@ -96,7 +80,6 @@ class TestStrategyParams:
         p = StrategyParams()
         assert p.wma_fast == 2
         assert p.wma_slow == 4
-        assert p.entry_source == "ha"
         # nested trailing
         assert p.trailing.swing_lookback == 4
         assert p.trailing.bollinger_period == 20
@@ -115,14 +98,6 @@ class TestStrategyParams:
         # 20 (BB period) > 4 (wma_slow) → warmup = 20 + 3
         p = StrategyParams()
         assert p.warmup_bars == 20 + 3
-
-    def test_entry_source_raw_accepted(self) -> None:
-        p = StrategyParams(entry_source="raw")
-        assert p.entry_source == "raw"
-
-    def test_invalid_entry_source(self) -> None:
-        with pytest.raises(ConfigError, match="entry_source"):
-            StrategyParams(entry_source="bogus")  # type: ignore[arg-type]
 
 
 class TestTrailingStopParams:
@@ -160,11 +135,11 @@ class TestIndicatorsReady:
 
 class TestLongEntry:
     def _build_setup(self, t: int = 25, n: int = 30) -> pd.DataFrame:
-        ha_close = [100.0] * n
-        ha_close[t - 3] = 98.0
-        ha_close[t - 2] = 99.0
-        ha_close[t - 1] = 100.5
-        ha_close[t] = 101.0
+        close = [100.0] * n
+        close[t - 3] = 98.0
+        close[t - 2] = 99.0
+        close[t - 1] = 100.5
+        close[t] = 101.0
 
         wma_fast = [100.0] * n
         wma_slow = [100.0] * n
@@ -183,8 +158,8 @@ class TestLongEntry:
         # 其他 bar 保持 99.0，避免污染前 N 根之外的視窗
 
         return make_augmented(
-            n, ha_close=ha_close, ha_wma_fast=wma_fast,
-            ha_wma_slow=wma_slow, low=low,
+            n, close=close, wma_fast=wma_fast,
+            wma_slow=wma_slow, low=low,
         )
 
     def test_emits_signal_when_all_conditions_met(self) -> None:
@@ -214,8 +189,8 @@ class TestLongEntry:
         )
         strat = LongTrendStrategy(params)
         df = self._build_setup(t=25, n=30).copy()
-        df.loc[df.index[24], "ha_wma_fast"] = 100.5
-        df.loc[df.index[24], "ha_wma_slow"] = 100.0  # fast > slow already
+        df.loc[df.index[24], "wma_fast"] = 100.5
+        df.loc[df.index[24], "wma_slow"] = 100.0  # fast > slow already
         assert strat.detect_entry(df, 25) is None
 
     def test_rejects_when_structure_fails_t2(self) -> None:
@@ -224,7 +199,7 @@ class TestLongEntry:
         )
         strat = LongTrendStrategy(params)
         df = self._build_setup(t=25, n=30).copy()
-        df.loc[df.index[23], "ha_close"] = 102.0
+        df.loc[df.index[23], "close"] = 102.0
         assert strat.detect_entry(df, 25) is None
 
     def test_rejects_when_initial_stop_above_close(self) -> None:
@@ -260,11 +235,11 @@ class TestLongEntry:
 
 class TestShortEntry:
     def _build_setup(self, t: int = 25, n: int = 30) -> pd.DataFrame:
-        ha_close = [100.0] * n
-        ha_close[t - 3] = 102.0
-        ha_close[t - 2] = 101.0
-        ha_close[t - 1] = 100.5
-        ha_close[t] = 99.0
+        close = [100.0] * n
+        close[t - 3] = 102.0
+        close[t - 2] = 101.0
+        close[t - 1] = 100.5
+        close[t] = 99.0
 
         wma_fast = [100.0] * n
         wma_slow = [100.0] * n
@@ -280,8 +255,8 @@ class TestShortEntry:
         high[t] = 100.5
 
         return make_augmented(
-            n, ha_close=ha_close, ha_wma_fast=wma_fast,
-            ha_wma_slow=wma_slow, high=high,
+            n, close=close, wma_fast=wma_fast,
+            wma_slow=wma_slow, high=high,
         )
 
     def test_emits_signal_when_all_conditions_met(self) -> None:
@@ -296,148 +271,6 @@ class TestShortEntry:
         assert sig.direction is Direction.SHORT
         # Stage 1 stop = max(high[22..25]) × (1 + 0.0003) = 102.5 × 1.0003
         assert sig.initial_stop == pytest.approx(102.5 * (1 + 0.0003))
-
-
-# --------------------------------------------------------------------------- #
-# entry_source 切換：HA vs raw K 行為差異
-# --------------------------------------------------------------------------- #
-
-class TestEntrySourceSwitching:
-    """構造一個情境：HA 路線符合進場條件、raw 路線不符合（或反之），
-    驗證同一個 df 在不同 entry_source 下會產生不同訊號。"""
-
-    def _build(self, t: int = 25, n: int = 30) -> pd.DataFrame:
-        # HA 路線符合金叉 + 結構上升
-        ha_close = [100.0] * n
-        ha_close[t - 3] = 98.0
-        ha_close[t - 2] = 99.0
-        ha_close[t - 1] = 100.5
-        ha_close[t] = 101.0
-
-        ha_wma_fast = [100.0] * n
-        ha_wma_slow = [100.0] * n
-        ha_wma_fast[t - 1] = 99.5
-        ha_wma_slow[t - 1] = 100.0
-        ha_wma_fast[t] = 100.8
-        ha_wma_slow[t] = 100.5
-
-        # raw 路線**沒有**金叉：fast 一直 <= slow
-        raw_wma_fast = [99.0] * n
-        raw_wma_slow = [100.0] * n
-
-        # close 也不符合條件 2（不是上升結構）
-        close = [100.0] * n  # 全平
-        # low 給足夠低讓 stop 計算合理
-        low = [98.0] * n
-        return make_augmented(
-            n,
-            ha_close=ha_close,
-            ha_wma_fast=ha_wma_fast,
-            ha_wma_slow=ha_wma_slow,
-            raw_wma_fast=raw_wma_fast,
-            raw_wma_slow=raw_wma_slow,
-            close=close,
-            low=low,
-        )
-
-    def test_ha_source_fires_raw_does_not(self) -> None:
-        params_ha = StrategyParams(
-            entry_source="ha",
-            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
-        )
-        params_raw = StrategyParams(
-            entry_source="raw",
-            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
-        )
-        df = self._build(t=25, n=30)
-
-        sig_ha = LongTrendStrategy(params_ha).detect_entry(df, 25)
-        sig_raw = LongTrendStrategy(params_raw).detect_entry(df, 25)
-
-        # HA 路線符合 → 出訊號；raw 路線不符合 → None
-        assert sig_ha is not None
-        assert "HA" in sig_ha.reason
-        assert sig_raw is None
-
-    def test_raw_source_fires_ha_does_not(self) -> None:
-        # 反向構造：raw 路線符合金叉、HA 路線不符合
-        n, t = 30, 25
-        # raw 金叉：bar t-1 fast<=slow，bar t fast>slow
-        raw_wma_fast = [100.0] * n
-        raw_wma_slow = [100.0] * n
-        raw_wma_fast[t - 1] = 99.5
-        raw_wma_slow[t - 1] = 100.0
-        raw_wma_fast[t] = 100.8
-        raw_wma_slow[t] = 100.5
-        # close 結構上升
-        close = [100.0] * n
-        close[t - 3] = 98.0
-        close[t - 2] = 99.0
-        close[t - 1] = 100.5
-        close[t] = 101.0
-
-        # HA 路線不交叉
-        ha_wma_fast = [99.0] * n
-        ha_wma_slow = [100.0] * n
-        ha_close = [100.0] * n  # HA close 也平
-
-        df = make_augmented(
-            n, ha_close=ha_close,
-            ha_wma_fast=ha_wma_fast, ha_wma_slow=ha_wma_slow,
-            raw_wma_fast=raw_wma_fast, raw_wma_slow=raw_wma_slow,
-            close=close, low=[98.0] * n,
-        )
-
-        params_ha = StrategyParams(
-            entry_source="ha",
-            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
-        )
-        params_raw = StrategyParams(
-            entry_source="raw",
-            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
-        )
-
-        assert LongTrendStrategy(params_ha).detect_entry(df, 25) is None
-        sig_raw = LongTrendStrategy(params_raw).detect_entry(df, 25)
-        assert sig_raw is not None
-        assert "RAW" in sig_raw.reason
-
-    def test_short_raw_source_works(self) -> None:
-        # 鏡像測試：raw 死叉
-        n, t = 30, 25
-        raw_wma_fast = [100.0] * n
-        raw_wma_slow = [100.0] * n
-        raw_wma_fast[t - 1] = 100.5
-        raw_wma_slow[t - 1] = 100.0
-        raw_wma_fast[t] = 99.5
-        raw_wma_slow[t] = 100.0
-        close = [100.0] * n
-        close[t - 3] = 102.0
-        close[t - 2] = 101.0
-        close[t - 1] = 100.5
-        close[t] = 99.0
-
-        # HA 路線不交叉
-        ha_wma_fast = [101.0] * n
-        ha_wma_slow = [100.0] * n
-        ha_close = [100.0] * n
-
-        df = make_augmented(
-            n, ha_close=ha_close,
-            ha_wma_fast=ha_wma_fast, ha_wma_slow=ha_wma_slow,
-            raw_wma_fast=raw_wma_fast, raw_wma_slow=raw_wma_slow,
-            close=close, high=[102.0] * n,
-        )
-
-        params_raw = StrategyParams(
-            entry_source="raw",
-            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
-        )
-
-        sig = ShortTrendStrategy(params_raw).detect_entry(df, 25)
-        assert sig is not None
-        assert sig.direction is Direction.SHORT
-        assert "RAW" in sig.reason
 
 
 # --------------------------------------------------------------------------- #

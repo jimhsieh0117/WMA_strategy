@@ -65,26 +65,14 @@ REGISTRY: dict[str, IndicatorRegistration] = {
                        color="#facc15", line_style="dotted"),
         ),
     ),
-    # entry_source="raw" 模式用：純 close 上的 WMA
+    # 進場訊號用：原始 close 上的 WMA
     "wma": IndicatorRegistration(
         name="wma",
-        label="WMA (Raw)",
+        label="WMA",
         compute=_identity,
         overlay_series=(
             SeriesSpec("wma_fast", "WMA Fast", color="#22d3ee"),
             SeriesSpec("wma_slow", "WMA Slow", color="#a855f7"),
-        ),
-    ),
-    # entry_source="ha" 模式用：HA_close 上的 WMA
-    "ha_wma": IndicatorRegistration(
-        name="ha_wma",
-        label="WMA (HA)",
-        compute=_identity,
-        overlay_series=(
-            SeriesSpec("ha_wma_fast", "HA-WMA Fast",
-                       color="#22d3ee", line_style="dashed"),
-            SeriesSpec("ha_wma_slow", "HA-WMA Slow",
-                       color="#a855f7", line_style="dashed"),
         ),
     ),
 
@@ -125,7 +113,6 @@ REGISTRY: dict[str, IndicatorRegistration] = {
 }
 
 
-def default_panels_for(entry_source: str) -> list[str]:
-    """依 entry_source 推薦預設面板組合。"""
-    wma_overlay = "ha_wma" if entry_source == "ha" else "wma"
-    return ["bollinger", wma_overlay, "volume", "wavetrend"]
+def default_panels() -> list[str]:
+    """預設面板組合。"""
+    return ["bollinger", "wma", "volume", "wavetrend"]

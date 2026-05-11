@@ -101,9 +101,6 @@ def _make_df(n: int) -> pd.DataFrame:
         {
             "open": closes - 0.5, "high": closes + 1.0, "low": closes - 1.5,
             "close": closes, "volume": np.full(n, 10.0),
-            "ha_open": closes, "ha_high": closes + 1.0, "ha_low": closes - 1.5,
-            "ha_close": closes,
-            "ha_wma_fast": closes, "ha_wma_slow": closes,
             "wma_fast": closes, "wma_slow": closes,
             "bb_middle": closes,
             "bb_upper": np.full(n, 110.0), "bb_lower": np.full(n, 90.0),

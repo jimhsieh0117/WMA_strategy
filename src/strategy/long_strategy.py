@@ -1,6 +1,6 @@
 """多頭趨勢策略 — 對應 多頭趨勢策略_v2.md + ARCHITECTURE.md §10 三階段止損。
 
-進場條件（Bar[t] 收盤後判斷，K 線來源由 ``entry_source`` 切換）：
+進場條件（Bar[t] 收盤後判斷，一律用原始 K 線）：
 
   條件 1（黃金交叉）：
     WMA_fast[t]   >  WMA_slow[t]
@@ -12,11 +12,7 @@
 
 兩條件同時成立 → 產生 ENTRY 訊號。
 
-``entry_source`` 切換規則：
-- ``"ha"``：用 ha_wma_fast / ha_wma_slow / ha_close（HA 平滑後的訊號）
-- ``"raw"``：用 wma_fast / wma_slow / close（原始 K 線訊號）
-
-初始止損（Stage 1）始終由原始 K 線的 swing low 算，不受 entry_source 影響：
+初始止損（Stage 1）由原始 K 線的 swing low 算：
     initial_stop = min(low over [t - swing_lookback + 1 .. t]) × (1 − slippage_buffer)
 
 Look-ahead 防護：只讀 ``df.iloc[: bar_index + 1]``。
@@ -45,17 +41,9 @@ class LongTrendStrategy(BaseTrendStrategy):
         if bar_index < 3:
             return None
 
-        # 依 entry_source 切換指標欄位
-        if self.params.entry_source == "ha":
-            wma_fast = df["ha_wma_fast"]
-            wma_slow = df["ha_wma_slow"]
-            close = df["ha_close"]
-            source_tag = "HA"
-        else:  # "raw"
-            wma_fast = df["wma_fast"]
-            wma_slow = df["wma_slow"]
-            close = df["close"]
-            source_tag = "RAW"
+        wma_fast = df["wma_fast"]
+        wma_slow = df["wma_slow"]
+        close = df["close"]
 
         wma_f_t = wma_fast.iat[bar_index]
         wma_f_prev = wma_fast.iat[bar_index - 1]
@@ -102,7 +90,7 @@ class LongTrendStrategy(BaseTrendStrategy):
             timestamp=df.index[bar_index],
             initial_stop=initial_stop,
             reason=(
-                f"[{source_tag}] golden_cross & structure: "
+                f"golden_cross & structure: "
                 f"wma_f={wma_f_t:.4f} > wma_s={wma_s_t:.4f}, "
                 f"c[-2]={c_t2:.4f}, c[-3]={c_t3:.4f} < c[0]={c_t:.4f}, "
                 f"swing_low={swing_low:.4f}"

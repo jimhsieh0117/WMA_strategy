@@ -115,7 +115,6 @@ def run_single_strategy(
         mode=cfg.signal_filter.mode,  # type: ignore[arg-type]
         window=cfg.signal_filter.window,
         threshold=cfg.signal_filter.threshold,
-        source=cfg.signal_filter.source,
     )
     r_cap = RCapParams(
         mode=cfg.r_cap.mode,  # type: ignore[arg-type]
@@ -124,7 +123,6 @@ def run_single_strategy(
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
         wma_slow=cfg.wma_slow,
-        entry_source=cfg.entry_source,  # type: ignore[arg-type]
         trailing=trailing,
         signal_filter=signal_filter,
         r_cap=r_cap,
