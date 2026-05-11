@@ -15,6 +15,9 @@ matplotlib>=3.8
 # Progress bars (long-running loops)
 tqdm>=4.66
 
+# ML / multivariate analysis
+scikit-learn>=1.5
+
 # Testing
 pytest>=8.0
 

@@ -9,7 +9,7 @@
 ## 〇、專案性質
 
 - 加密貨幣（ETHUSDT 為主）多/空趨勢策略**回測**專案
-- HA + WMA 交叉訊號 + ATR 移動止損
+- WMA 交叉訊號 + 移動止損
 - 多空兩支策略**獨立帳戶回測**，最後合併權益曲線
 - Python 3.14 + 自製 event-driven 回測引擎（不用 backtesting.py）
 - 預留實盤 broker / 超參數優化 / WFA / Monte Carlo 接口（先不實作，但保留可替換性）
@@ -184,7 +184,7 @@ class ConfigError(WMAStrategyError): ...
 
 ## 十一、領域知識（避免低級錯誤）
 
-- HA / WMA / ATR：只用 ≤ 當前 K 線的資料（look-ahead 嚴禁）
+- WMA / ATR：只用 ≤ 當前 K 線的資料（look-ahead 嚴禁）
 - ATR 用**原始 K 線**，不用 HA（與策略文件一致）
 - 止損**只能往有利方向移動**，逆向不更新
 - 限價單未成交視為廢單，不延期到下下根 K 線
@@ -205,4 +205,4 @@ class ConfigError(WMAStrategyError): ...
 
 ---
 
-*最後更新：2026-04-29*
+*最後更新：2026-05-11*
