@@ -140,7 +140,7 @@ permute trade 順序，保留全部交易。final_equity / PF / Sharpe 為 permu
 > - P(獲利收尾) = 0%
 > - **不是運氣問題，是結構性無 edge**
 
-![](../results/mc/15m_W4-6_both/bootstrap_hist.png)
+![](img/mc_bootstrap.png)
 
 ---
 
@@ -202,7 +202,7 @@ P(PF>1) 從 33.8% → 16.4%，但 OOS PF 0.895 仍明顯優於 OOS baseline 0.72
 MDD 從 17.5% → 2.6%（IS）/ 12.5% → 2.9%（OOS），**縮 4–7 倍**。
 Return 從顯著虧損 → 接近打平。但 PF 仍 < 1。
 
-![](../results/chop_filter_report/equity_compare.png)
+![](img/equity_compare.png)
 
 ---
 
@@ -221,7 +221,7 @@ filter 後 stage 3 占比僅輕微提升（IS +2.4pp、OOS +0.8pp）。三 stage
 
 R 中位數從 base 1.000 → filt 1.121（+12%），分布輕度右移。
 
-![](../results/r_stage_distribution/R_hist_IS.png)
+![](img/R_hist_IS.png)
 
 ### 8.2 時段（UTC 小時）分布（`analyze_hour_distribution.py`）
 
@@ -239,7 +239,7 @@ R 中位數從 base 1.000 → filt 1.121（+12%），分布輕度右移。
 filter 主動避開亞洲深夜與歐洲早盤（移除率 78–85%），對美股時段相對寬鬆
 （45–55%）。
 
-![](../results/hour_distribution/hour_distribution.png)
+![](img/hour_distribution.png)
 
 ### 8.3 Realized R（`analyze_realized_R.py`）
 
@@ -396,10 +396,10 @@ src/
 
 ## 附錄 C：關鍵 PNG 索引
 
-- `results/mc/15m_W4-6_both/bootstrap_hist.png` — MC bootstrap CI
-- `results/mc/15m_W4-6_both/reshuffle_hist.png` — MC reshuffle CI
-- `results/chop_filter_report/equity_compare.png` — IS/OOS equity baseline vs filtered
-- `results/chop_filter_report_w24/equity_compare.png` — 同上 W(2,4)
-- `results/r_stage_distribution/R_hist_IS.png` — R 分布（stage 著色）IS
-- `results/r_stage_distribution/R_hist_OOS.png` — 同 OOS
-- `results/hour_distribution/hour_distribution.png` — 小時 trade count + avg PnL
+- `docs/img/mc_bootstrap.png` — MC bootstrap CI
+- `docs/img/mc_reshuffle.png` — MC reshuffle CI
+- `docs/img/equity_compare.png` — IS/OOS equity baseline vs filtered
+- `docs/img/equity_compare_w24.png` — 同上 W(2,4)
+- `docs/img/R_hist_IS.png` — R 分布（stage 著色）IS
+- `docs/img/R_hist_OOS.png` — 同 OOS
+- `docs/img/hour_distribution.png` — 小時 trade count + avg PnL

@@ -97,7 +97,7 @@
 
 ### 看圖：訓練期 vs 驗證期 權益曲線（原始 vs 過濾）
 
-![](../results/chop_filter_report/equity_compare.png)
+![](img/equity_compare.png)
 
 灰線是原始策略、藍線是套用過濾器後。可以看出：藍線在兩個樣本期間都明顯比灰線平緩，回撤幅度大幅縮小，但整體趨勢仍向下。
 
@@ -119,7 +119,7 @@
 
 ### 看圖：peak R（最大潛在獲利）分布
 
-![](../results/r_stage_distribution/R_hist_IS.png)
+![](img/R_hist_IS.png)
 
 紅色 = Stage 1、橘色 = Stage 2、綠色 = Stage 3。可以看到 Stage 1 訂單的潛在獲利集中在 0~1R（短命停損），Stage 3 多在 2R 以上。過濾前 vs 過濾後分布形狀幾乎相同，只是整體訂單數減少。
 
@@ -172,7 +172,7 @@
 
 ### 看圖：每小時訂單分布
 
-![](../results/hour_distribution/hour_distribution.png)
+![](img/hour_distribution.png)
 
 上方為訂單數量、下方為每筆平均 PnL。灰=原始、藍=過濾後。可看到：
 - 過濾器**主動避開**亞洲深夜與歐洲早盤（這些時段約 80% 訂單被砍）
@@ -187,7 +187,7 @@
 
 ### 看圖：Bootstrap 重抽樣結果
 
-![](../results/mc/15m_W4-6_both/bootstrap_hist.png)
+![](img/mc_bootstrap.png)
 
 紅色直線是原始回測值、虛線是模擬 5%/50%/95% 分位數。判讀：
 
@@ -258,9 +258,9 @@
 
 | 圖 | 內容 | 路徑 |
 |----|------|------|
-| 1 | 訓練期 vs 驗證期權益曲線對照 | `results/chop_filter_report/equity_compare.png` |
-| 2 | Stage 著色的 R 分布（訓練期） | `results/r_stage_distribution/R_hist_IS.png` |
-| 3 | Stage 著色的 R 分布（驗證期） | `results/r_stage_distribution/R_hist_OOS.png` |
-| 4 | 每小時訂單分布與平均期望值 | `results/hour_distribution/hour_distribution.png` |
-| 5 | Monte Carlo Bootstrap 信賴區間 | `results/mc/15m_W4-6_both/bootstrap_hist.png` |
-| 6 | Monte Carlo Reshuffle 順序敏感度 | `results/mc/15m_W4-6_both/reshuffle_hist.png` |
+| 1 | 訓練期 vs 驗證期權益曲線對照 | `docs/img/equity_compare.png` |
+| 2 | Stage 著色的 R 分布（訓練期） | `docs/img/R_hist_IS.png` |
+| 3 | Stage 著色的 R 分布（驗證期） | `docs/img/R_hist_OOS.png` |
+| 4 | 每小時訂單分布與平均期望值 | `docs/img/hour_distribution.png` |
+| 5 | Monte Carlo Bootstrap 信賴區間 | `docs/img/mc_bootstrap.png` |
+| 6 | Monte Carlo Reshuffle 順序敏感度 | `docs/img/mc_reshuffle.png` |
