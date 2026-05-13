@@ -197,13 +197,17 @@ def _panel_payload(panel: PanelSpec, df: pd.DataFrame) -> dict:
 def _indicator_payload(
     reg: IndicatorRegistration, df: pd.DataFrame, *, enabled: bool
 ) -> dict:
-    """組成單一指標的完整 payload（overlay + panel + enabled flag）。"""
+    """組成單一指標的完整 payload（overlay + panel + markers + enabled flag）。"""
+    markers: list[dict] = (
+        reg.markers_compute(df) if reg.markers_compute is not None else []
+    )
     return {
         "name": reg.name,
         "label": reg.display_label,
         "enabled": enabled,
         "overlay_series": [_series_payload(s, df) for s in reg.overlay_series],
         "panel": _panel_payload(reg.panel, df) if reg.panel is not None else None,
+        "markers": markers,
     }
 
 

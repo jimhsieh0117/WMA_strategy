@@ -18,6 +18,7 @@ from typing import Callable
 
 import pandas as pd
 
+from src.indicators.market_structure import compute_market_structure
 from src.indicators.wavetrend import wavetrend
 from src.viewer.panels import HorizontalLine, PanelSpec, SeriesSpec
 
@@ -31,6 +32,9 @@ class IndicatorRegistration:
     label: str = ""              # UI 顯示名（chip / 下拉），空字串 → 用 name
     overlay_series: tuple[SeriesSpec, ...] = ()
     panel: PanelSpec | None = None
+    # 主圖 marker source：給定 df 後回傳 LWC marker dict list
+    # （shape/position/color/text/time 等鍵），與 trade markers 合併渲染。
+    markers_compute: Callable[[pd.DataFrame], list[dict]] | None = None
 
     @property
     def display_label(self) -> str:
@@ -44,6 +48,74 @@ def _identity(df: pd.DataFrame) -> pd.DataFrame:
 
 def _compute_wavetrend(df: pd.DataFrame) -> pd.DataFrame:
     return wavetrend(df, n1=10, n2=21)
+
+
+# market structure 預設 pivot 參數（與 yaml/strategy 用同一組值才有一致性）
+_MS_PIVOT_LEFT = 10
+_MS_PIVOT_RIGHT = 10
+
+
+def _compute_market_structure(df: pd.DataFrame) -> pd.DataFrame:
+    return compute_market_structure(
+        df, pivot_left=_MS_PIVOT_LEFT, pivot_right=_MS_PIVOT_RIGHT,
+    )
+
+
+def _ms_markers(df: pd.DataFrame) -> list[dict]:
+    """把 ms_swing_high/low + ms_event 序列轉成 LWC markers。
+
+    Pivot 用 circle 小點（綠=PL、紅=PH），事件用 arrow + 文字。
+    """
+    if "ms_event" not in df.columns:
+        return []
+
+    markers: list[dict] = []
+    # swing high → circle 紅
+    sh = df["ms_swing_high"].dropna()
+    for ts, _v in sh.items():
+        markers.append({
+            "time": int(ts.timestamp()),
+            "position": "aboveBar",
+            "color": "#dc2626",
+            "shape": "circle",
+            "size": 0,  # LWC v4: 0=small
+            "text": "",
+        })
+    # swing low → circle 綠
+    sl = df["ms_swing_low"].dropna()
+    for ts, _v in sl.items():
+        markers.append({
+            "time": int(ts.timestamp()),
+            "position": "belowBar",
+            "color": "#16a34a",
+            "shape": "circle",
+            "size": 0,
+            "text": "",
+        })
+    # BoS / CHoCH → 文字標
+    evt_col = df["ms_event"]
+    nonempty = evt_col[evt_col.astype(str).str.len() > 0]
+    label_map = {
+        "bos_up": ("aboveBar", "arrowUp", "#3b82f6", "BoS"),
+        "bos_down": ("belowBar", "arrowDown", "#3b82f6", "BoS"),
+        "choch_up": ("aboveBar", "arrowUp", "#f59e0b", "CHoCH"),
+        "choch_down": ("belowBar", "arrowDown", "#f59e0b", "CHoCH"),
+    }
+    for ts, evt in nonempty.items():
+        spec = label_map.get(str(evt))
+        if spec is None:
+            continue
+        position, shape, color, text = spec
+        markers.append({
+            "time": int(ts.timestamp()),
+            "position": position,
+            "color": color,
+            "shape": shape,
+            "text": text,
+        })
+
+    markers.sort(key=lambda m: m["time"])
+    return markers
 
 
 # --------------------------------------------------------------------------- #
@@ -91,6 +163,12 @@ REGISTRY: dict[str, IndicatorRegistration] = {
             ),
         ),
     ),
+    "market_structure": IndicatorRegistration(
+        name="market_structure",
+        label="Market Structure",
+        compute=_compute_market_structure,
+        markers_compute=_ms_markers,
+    ),
     "wavetrend": IndicatorRegistration(
         name="wavetrend",
         label="WaveTrend",
@@ -115,4 +193,4 @@ REGISTRY: dict[str, IndicatorRegistration] = {
 
 def default_panels() -> list[str]:
     """預設面板組合。"""
-    return ["bollinger", "wma", "volume", "wavetrend"]
+    return ["bollinger", "wma", "volume", "wavetrend", "market_structure"]

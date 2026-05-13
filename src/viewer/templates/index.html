@@ -312,20 +312,20 @@
       });
     }
 
-    // markers：long / short 的進出場
+    // markers：long / short 的進出場（固定不可關）+ 各 indicator 的 markers（可 toggle）
     // 多倉並行（pyramiding）模式下，同一根 K 可能有多筆 entry / exit。
     // marker 文字含 #position_id 讓 entry ↔ exit 能配對。
-    const markers = [];
+    const tradeMarkers = [];
     const pidTag = (t) => (t.position_id ? `#${t.position_id} ` : '');
     data.trades.long.forEach(t => {
-      markers.push({
+      tradeMarkers.push({
         time: t.entry_time,
         position: 'belowBar',
         color: '#2563eb',
         shape: 'arrowUp',
         text: `L${pidTag(t)}${t.entry_price.toFixed(2)}`,
       });
-      markers.push({
+      tradeMarkers.push({
         time: t.exit_time,
         position: 'aboveBar',
         color: t.net_pnl >= 0 ? '#16a34a' : '#dc2626',
@@ -334,14 +334,14 @@
       });
     });
     data.trades.short.forEach(t => {
-      markers.push({
+      tradeMarkers.push({
         time: t.entry_time,
         position: 'aboveBar',
         color: '#ea580c',
         shape: 'arrowDown',
         text: `S${pidTag(t)}${t.entry_price.toFixed(2)}`,
       });
-      markers.push({
+      tradeMarkers.push({
         time: t.exit_time,
         position: 'belowBar',
         color: t.net_pnl >= 0 ? '#16a34a' : '#dc2626',
@@ -349,8 +349,29 @@
         text: `${pidTag(t)}${t.return_pct >= 0 ? '+' : ''}${t.return_pct.toFixed(1)}%`,
       });
     });
-    markers.sort((a, b) => a.time - b.time);
-    candle.setMarkers(markers);
+
+    // indicator markers：每個 indicator 自帶 list，依 enabled 動態合併
+    // enabled 狀態用 Map 保存，後面 chip toggle 也共用同一份。
+    const indicatorEnabled = new Map(
+      data.indicators.map(ind => [ind.name, ind.enabled])
+    );
+    const indicatorMarkersByName = {};
+    data.indicators.forEach(ind => {
+      if (ind.markers && ind.markers.length) {
+        indicatorMarkersByName[ind.name] = ind.markers;
+      }
+    });
+
+    function rebuildMarkers() {
+      const merged = tradeMarkers.slice();
+      Object.entries(indicatorMarkersByName).forEach(([name, ms]) => {
+        if (indicatorEnabled.get(name)) merged.push(...ms);
+      });
+      merged.sort((a, b) => a.time - b.time);
+      candle.setMarkers(merged);
+    }
+
+    rebuildMarkers();  // 初始 render
 
     // ===========================================================
     // 各副面板（依 data.indicators 中的 panel 物件）
@@ -476,10 +497,7 @@
     // 指標下拉切換（chip toggle）
     // ===========================================================
     const indicatorBar = document.getElementById('indicator-bar');
-    // enabled 狀態用 Map 保存，避免重複查 data
-    const indicatorEnabled = new Map(
-      data.indicators.map(ind => [ind.name, ind.enabled])
-    );
+    // indicatorEnabled 已在上方（marker 區）宣告
 
     function reflowPanelHeights() {
       // 依當前可見 panels 重算 panel 高度（主圖/equity 不變）
@@ -506,6 +524,10 @@
       if (panelRef) {
         panelRef.wrapper.style.display = enabled ? '' : 'none';
         reflowPanelHeights();
+      }
+      // markers：若該指標有 markers，重新合併
+      if (indicatorMarkersByName[name]) {
+        rebuildMarkers();
       }
     }
 
