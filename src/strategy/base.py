@@ -220,7 +220,10 @@ class BaseTrendStrategy(ABC):
     - ``direction``: 類別變數（LONG / SHORT）
     - ``detect_entry``: 在 bar 收盤後判斷是否該進場，含 Stage 1 初始止損計算
 
-    狀態完全外部化：策略物件只持有 params，不知道目前是否有持倉。
+    狀態：本類別維護 **pending cross 狀態**（entry_retry 機制用），以便交叉發生後
+    給連續 ``max_attempts`` 根 K 嘗試 entry conditions。每個 backtest 用新實例，
+    所以狀態天然隔離；不影響 look-ahead 安全性（仍只讀 ≤ bar_index 的資料）。
+
     Stage 2 / 3 拖曳止損改由 ``TrailingStopController`` 處理（per-position 實例）。
     """
 
@@ -228,6 +231,9 @@ class BaseTrendStrategy(ABC):
 
     def __init__(self, params: StrategyParams) -> None:
         self.params = params
+        # entry_retry pending state（在交叉根後給 N 根 K 重試其他條件）
+        self._pending_cross_bar: int | None = None
+        self._pending_attempts_used: int = 0
 
     @abstractmethod
     def detect_entry(

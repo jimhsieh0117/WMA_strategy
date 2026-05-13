@@ -33,8 +33,8 @@ from src.strategy.base import BaseTrendStrategy, prepare_indicators
 from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
 from src.strategy.types import (
-    ChopFilterParams, RCapParams, SignalFilterParams, StrategyParams,
-    StructureFilterParams,
+    ChopFilterParams, EntryRetryParams, RCapParams, SignalFilterParams,
+    StrategyParams, StructureFilterParams,
     TrailingStopParams,
 )
 from src.utils.config import FullConfig, PeriodSpec
@@ -141,6 +141,10 @@ def run_single_strategy(
         pivot_left=cfg.structure_filter.pivot_left,
         pivot_right=cfg.structure_filter.pivot_right,
     )
+    entry_retry = EntryRetryParams(
+        long_max_attempts=cfg.entry_retry.long_max_attempts,
+        short_max_attempts=cfg.entry_retry.short_max_attempts,
+    )
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
         wma_slow=cfg.wma_slow,
@@ -149,6 +153,7 @@ def run_single_strategy(
         r_cap=r_cap,
         chop_filter=chop_filter,
         structure_filter=structure_filter,
+        entry_retry=entry_retry,
     )
     augmented = prepare_indicators(df, params)
 

@@ -312,6 +312,48 @@ class ChopFilterParams:
 
 
 # --------------------------------------------------------------------------- #
+# Entry Retry：交叉發生後給 N 根 K 重試其他條件
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class EntryRetryParams:
+    """交叉重試機制。WMA 交叉只在 t 發生一次，把它視為「機會訊號」，給連續 N 根 K
+    分別檢查 entry conditions（除了 WMA 本身），任一根全部過就進場、消費 pending。
+
+    - ``max_attempts=1``：原本行為——只有交叉根當下檢查，沒過就廢
+    - ``max_attempts=3``：交叉根 + 接下來 2 根 K，共 3 次嘗試
+
+    重試時：結構檢查 (open[bar-2] < close[bar])、signal_filter、chop_filter、
+    structure_filter、Stage 1 swing 等都用 **「當下 bar」** 的視窗重新計算，
+    自然跟著 bar 推進。WMA 交叉條件不重檢。
+    """
+
+    # Per-direction 設計：實測 short 端 retry 在 max=3 風險極高（MDD 87%），
+    # long 端較能承受；保留各自獨立參數讓未來可只在 long 試。
+    long_max_attempts: int = 1       # 多單 retry 次數，預設 1
+    short_max_attempts: int = 1      # 空單 retry 次數，預設 1
+
+    def __post_init__(self) -> None:
+        for name, val in [
+            ("long_max_attempts", self.long_max_attempts),
+            ("short_max_attempts", self.short_max_attempts),
+        ]:
+            if (not isinstance(val, int) or isinstance(val, bool) or val < 1):
+                raise ConfigError(
+                    f"entry_retry.{name} must be int >= 1, got {val!r}"
+                )
+
+    def max_attempts_for(self, direction) -> int:
+        """根據 Direction 取對應的 max_attempts。"""
+        from src.utils.types import Direction  # 避免循環 import
+        return (
+            self.long_max_attempts
+            if direction is Direction.LONG
+            else self.short_max_attempts
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Structure Filter：市場結構順勢進場濾網（pivot-based BoS/CHoCH）
 # --------------------------------------------------------------------------- #
 
@@ -384,6 +426,11 @@ class StrategyParams:
     # ---- 結構順勢濾網（market structure，BoS/CHoCH，只在進場擋）----
     structure_filter: "StructureFilterParams" = field(
         default_factory=lambda: StructureFilterParams(),
+    )
+
+    # ---- 進場重試（交叉發生後給 N 根 K 嘗試其他條件）----
+    entry_retry: "EntryRetryParams" = field(
+        default_factory=lambda: EntryRetryParams(),
     )
 
     def __post_init__(self) -> None:

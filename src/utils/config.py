@@ -108,6 +108,13 @@ class StructureFilterConfig:
 
 
 @dataclass(frozen=True)
+class EntryRetryConfig:
+    """進場重試設定（對應 strategy.entry_retry 區塊）。Per-direction 配置。"""
+    long_max_attempts: int = 1     # 多單：1 = 原行為；> 1 = 交叉後給 N 根 K 嘗試
+    short_max_attempts: int = 1    # 空單：同上
+
+
+@dataclass(frozen=True)
 class FullConfig:
     """完整設定的扁平容器。"""
 
@@ -154,6 +161,9 @@ class FullConfig:
 
     # strategy: structure filter (market structure aligned-direction gate)
     structure_filter: StructureFilterConfig
+
+    # strategy: entry retry (allow N attempts after a cross)
+    entry_retry: EntryRetryConfig
 
     # backtest
     output_dir: Path
@@ -415,6 +425,22 @@ def load_config(path: str | Path) -> FullConfig:
         pivot_left=sf_pl, pivot_right=sf_pr,
     )
 
+    # ---- strategy: entry_retry ----
+    er_raw = strategy.get("entry_retry", {}) or {}
+    er_long = int(er_raw.get("long_max_attempts", 1))
+    er_short = int(er_raw.get("short_max_attempts", 1))
+    if er_long < 1:
+        raise ConfigError(
+            f"strategy.entry_retry.long_max_attempts must be >= 1, got {er_long}"
+        )
+    if er_short < 1:
+        raise ConfigError(
+            f"strategy.entry_retry.short_max_attempts must be >= 1, got {er_short}"
+        )
+    entry_retry = EntryRetryConfig(
+        long_max_attempts=er_long, short_max_attempts=er_short,
+    )
+
     # ---- backtest ----
     output_dir = Path(backtest.get("output_dir", "results")).expanduser()
     show_progress = bool(backtest.get("show_progress", True))
@@ -450,6 +476,7 @@ def load_config(path: str | Path) -> FullConfig:
         r_cap=r_cap,
         chop_filter=chop_filter,
         structure_filter=structure_filter,
+        entry_retry=entry_retry,
         output_dir=output_dir,
         show_progress=show_progress,
         force_close_at_end=force_close_at_end,

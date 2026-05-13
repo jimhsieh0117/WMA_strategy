@@ -2,18 +2,18 @@
 
 進場條件（Bar[t] 收盤後判斷，一律用原始 K 線）：
 
-  條件 1（黃金交叉）：
+  條件 1（黃金交叉，僅在交叉根判定一次）：
     WMA_fast[t]   >  WMA_slow[t]
     WMA_fast[t-1] <= WMA_slow[t-1]
 
   條件 2（趨勢結構確認）：
-    Close[t-2] < Close[t]
-    Close[t-3] < Close[t]
+    open[bar-2] < close[bar]    # bar 在 retry 時跟著推進
 
-兩條件同時成立 → 產生 ENTRY 訊號。
+  其他濾網（signal_filter / chop_filter / structure_filter）+ Stage 1 安全。
 
-初始止損（Stage 1）由原始 K 線的 swing low 算：
-    initial_stop = min(low over [t - swing_lookback + 1 .. t]) × (1 − slippage_buffer)
+Entry retry（``params.entry_retry.max_attempts``）：
+  交叉發生後給連續 N 根 K 嘗試其他條件。任一根全部過 → 進場、消費 pending。
+  WMA 交叉條件不重檢；視為機會訊號鎖定。
 
 Look-ahead 防護：只讀 ``df.iloc[: bar_index + 1]``。
 """
@@ -44,52 +44,80 @@ class LongTrendStrategy(BaseTrendStrategy):
         if bar_index < 3:
             return None
 
-        wma_fast = df["wma_fast"]
-        wma_slow = df["wma_slow"]
-        close = df["close"]
-        open_ = df["open"]
+        max_attempts = self.params.entry_retry.long_max_attempts
 
-        wma_f_t = wma_fast.iat[bar_index]
-        wma_f_prev = wma_fast.iat[bar_index - 1]
-        wma_s_t = wma_slow.iat[bar_index]
-        wma_s_prev = wma_slow.iat[bar_index - 1]
-        c_t = close.iat[bar_index]
-        # 趨勢結構確認改用 open（實驗）：t-2 / t-3 的「開盤價」與當根 close 比較
-        o_t2 = open_.iat[bar_index - 2]
-        o_t3 = open_.iat[bar_index - 3]
+        # 1. 看 bar_index 是不是新金叉根 → 重設 pending
+        if self._detect_cross(df, bar_index):
+            self._pending_cross_bar = bar_index
+            self._pending_attempts_used = 0
 
-        # 暖機 NaN 防護
-        for v in (wma_f_t, wma_f_prev, wma_s_t, wma_s_prev, c_t, o_t2, o_t3):
-            if math.isnan(v):
-                return None
-
-        # 條件 1：當根金叉 + 前根尚未交叉
-        if not ((wma_f_t > wma_s_t) and (wma_f_prev <= wma_s_prev)):
+        # 2. 無 pending → 直接 return
+        if self._pending_cross_bar is None:
             return None
 
-        # 條件 2：交叉前 -2 根 open 低於當根 close（暫時只看 t-2）
+        # 3. attempts 用完 → 丟棄 pending
+        if self._pending_attempts_used >= max_attempts:
+            self._pending_cross_bar = None
+            self._pending_attempts_used = 0
+            return None
+
+        # 4. 嘗試一次（attempts +1）
+        self._pending_attempts_used += 1
+        signal = self._try_entry(df, bar_index)
+        if signal is not None:
+            # 消費 pending
+            self._pending_cross_bar = None
+            self._pending_attempts_used = 0
+            return signal
+        return None
+
+    # --------------------------------------------------------------------- #
+    # 拆分後的兩階段：(a) 偵測 WMA 交叉、(b) 檢查其他全部進場條件
+    # --------------------------------------------------------------------- #
+
+    def _detect_cross(self, df: pd.DataFrame, bar_index: int) -> bool:
+        """是否在 bar_index 形成金叉（WMA_fast 從下穿越 WMA_slow）。"""
+        if bar_index < 1:
+            return False
+        wma_f_t = df["wma_fast"].iat[bar_index]
+        wma_f_prev = df["wma_fast"].iat[bar_index - 1]
+        wma_s_t = df["wma_slow"].iat[bar_index]
+        wma_s_prev = df["wma_slow"].iat[bar_index - 1]
+        if (math.isnan(wma_f_t) or math.isnan(wma_f_prev)
+                or math.isnan(wma_s_t) or math.isnan(wma_s_prev)):
+            return False
+        return (wma_f_t > wma_s_t) and (wma_f_prev <= wma_s_prev)
+
+    def _try_entry(
+        self, df: pd.DataFrame, bar_index: int,
+    ) -> EntrySignal | None:
+        """檢查除 WMA 交叉外的所有進場條件；通過則組 EntrySignal。"""
+        if bar_index < 2:
+            return None
+        c_t = df["close"].iat[bar_index]
+        o_t2 = df["open"].iat[bar_index - 2]
+        if math.isnan(c_t) or math.isnan(o_t2):
+            return None
+
+        # 結構：open[bar-2] < close[bar]
         if not (o_t2 < c_t):
             return None
-        # if not (o_t3 < c_t):
-        #     return None
 
-        # 條件 3（可選）：進場前 N 根 K 實體比例濾網
+        # signal_filter（六根 K 實體比例濾網）
         if not passes_signal_filter(df, bar_index, Direction.LONG, self.params):
             return None
 
-        # 條件 4（可選）：盤整濾網（BBW_rank / ATR_rank / ADX）
+        # chop_filter（BBW_rank / ATR_rank / ADX）
         if not passes_chop_filter(df, bar_index, self.params):
             return None
 
-        # 條件 5（可選）：結構順勢濾網（market structure ms_trend）
-        # 只在進場擋；持倉/止損照原邏輯走，結構翻轉不主動平倉。
+        # structure_filter（market structure 順勢）
         if not passes_structure_filter(
             df, bar_index, Direction.LONG, self.params,
         ):
             return None
 
-        # Stage 1 初始止損：前 N 根原始 K 線最低低點，再往下 buffer
-        # （止損永遠用原始 low，與 entry_source 無關）
+        # Stage 1 初始止損
         n = self.params.trailing.swing_lookback
         if bar_index + 1 < n:
             return None
@@ -97,20 +125,26 @@ class LongTrendStrategy(BaseTrendStrategy):
         swing_low = float(swing_window.min())
         initial_stop = swing_low * (1.0 - self.params.trailing.stage1_slippage_buffer)
 
-        # 安全檢查：止損不能高於當下原始 close（會立即被打掉）
-        ref_price = float(df["close"].iat[bar_index])
+        ref_price = float(c_t)
         if initial_stop >= ref_price:
             return None
 
+        wma_f_t = df["wma_fast"].iat[bar_index]
+        wma_s_t = df["wma_slow"].iat[bar_index]
+        bars_after_cross = (
+            bar_index - self._pending_cross_bar
+            if self._pending_cross_bar is not None else 0
+        )
         return EntrySignal(
             direction=Direction.LONG,
             bar_index=bar_index,
             timestamp=df.index[bar_index],
             initial_stop=initial_stop,
             reason=(
-                f"golden_cross & structure: "
+                f"long entry (attempt {self._pending_attempts_used}, "
+                f"+{bars_after_cross}bar from cross): "
                 f"wma_f={wma_f_t:.4f} > wma_s={wma_s_t:.4f}, "
-                f"o[-2]={o_t2:.4f}, o[-3]={o_t3:.4f} < c[0]={c_t:.4f}, "
+                f"o[-2]={o_t2:.4f} < c[0]={c_t:.4f}, "
                 f"swing_low={swing_low:.4f}"
             ),
         )

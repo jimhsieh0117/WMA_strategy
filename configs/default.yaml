@@ -180,12 +180,13 @@ strategy:
   # 研究依據：sweep_chop_filters_combo.py IS PF 0.768 → 0.96（n 1300+ → 874）
   chop_filter:
     enabled: true
-    # 波動門檻（sweep_chop_volatility.py 2-yr IS sweep）：
-    #   40 → PF 1.50 / pnl +207（最高 PF）
-    #    5 → PF 1.35 / pnl +243（最高 pnl；新訊號 s3 占比 29.5% 接近自然 34%）
-    # 取 5 以擴大訊號池捕捉更多 alpha，多單獲利由 +209 提升到 +249
-    bbw_rank_min: 5.0             # BBW 百分位下界（%）
-    atr_rank_min: 5.0             # ATR 百分位下界（%）
+    # 波動門檻（sweep_retry_vol.py 2-yr IS sweep）：
+    #   vol=5  (rank ≥ 5)  → PnL +243 / PF 1.35 / MDD 4.9% / Sharpe 1.11
+    #   vol=45 (rank ≥ 45) → PnL +236 / PF 1.61 / MDD 3.2% / Sharpe 1.27 ★ risk-adjusted 最佳
+    # 取 45：絕對 PnL 只少 7，但 PF +0.26、MDD −1.7pp、Sharpe +0.16；
+    # long s3/s1=1.00（vs 5: 0.91），new entries 邊際品質更高。
+    bbw_rank_min: 45.0            # BBW 百分位下界（%）
+    atr_rank_min: 45.0            # ATR 百分位下界（%）
     adx_min: 20.0                 # ADX 絕對值下界（trend strength，不在這次 sweep 範圍）
     bb_period: 20                 # 獨立 BB 週期（與 trailing 分開）
     bb_num_std: 2.0
@@ -207,6 +208,22 @@ strategy:
     mode: aligned                 # aligned | exclude_counter
     pivot_left: 10                # 與 viewer market_structure 指標一致
     pivot_right: 10
+
+  # 進場重試（entry retry）— 把 WMA 交叉視為機會訊號
+  #   交叉發生後給連續 N 根 K 嘗試其他條件（signal_filter/chop_filter/
+  #   structure_filter/結構檢查/Stage 1 安全）；任一根全過 → 進場、消費 pending。
+  # WMA 交叉條件不重檢；視為訊號鎖定。重試時各條件視窗自動跟著 bar 推進。
+  # 1 = 原行為（只看交叉根當下）
+  # 3 = 給 3 根機會（交叉根 + 接下來 2 根）
+  # Per-direction：long 與 short 各自獨立。實測 2-yr IS：
+  #   long  max=1: ret +24.88% / PF 1.78 / MDD  5.5%
+  #   long  max=3: ret  +7.71% / PF 1.03 / MDD 29.9%（品質衰減大）
+  #   short max=1: ret  -0.56% / PF 0.98 / MDD 14.7%
+  #   short max=3: ret -84.35% / PF 0.69 / MDD 86.9%（爆倉等級，禁用！）
+  # → 目前兩邊都先 1（保守）；之後若做更精細的 long 端 retry 實驗可只動 long_max_attempts。
+  entry_retry:
+    long_max_attempts: 1
+    short_max_attempts: 1
 
   # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響（trigger-only 版本）
   #   mode:

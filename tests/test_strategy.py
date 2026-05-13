@@ -18,7 +18,7 @@ from src.strategy.base import (
 from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
 from src.strategy.types import (
-    ChopFilterParams, EntrySignal, StrategyParams,
+    ChopFilterParams, EntryRetryParams, EntrySignal, StrategyParams,
     StructureFilterParams, TrailingStopParams,
 )
 from src.utils.exceptions import ConfigError, DataIntegrityError
@@ -648,3 +648,165 @@ class TestStructureFilter:
             StructureFilterParams(pivot_left=0)
         with pytest.raises(ConfigError):
             StructureFilterParams(pivot_right=-1)
+
+
+class TestEntryRetry:
+    """交叉發生後給 max_attempts 根 K 嘗試 entry conditions。"""
+
+    def _build_setup(self, n: int = 40) -> pd.DataFrame:
+        """構造一個「t=25 金叉，但 t/t+1 結構失敗、t+2 結構通過」的場景。"""
+        close = [100.0] * n
+        # WMA 金叉發生在 t=25：fast 從下穿越 slow
+        wma_fast = [100.0] * n
+        wma_slow = [100.0] * n
+        wma_fast[24] = 99.5
+        wma_slow[24] = 100.0
+        wma_fast[25] = 100.8
+        wma_slow[25] = 100.5
+        # t=26、t=27 也保持 fast > slow，但不再是 "由下穿越"
+        wma_fast[26] = 100.9
+        wma_slow[26] = 100.5
+        wma_fast[27] = 101.0
+        wma_slow[27] = 100.5
+
+        # close 序列：讓 t=25 結構失敗 (open[23] > close[25])
+        # t=26 結構也失敗 (open[24] > close[26])，t=27 結構通過 (open[25] < close[27])
+        close[22] = 99.0
+        close[23] = 102.0   # open[23]=102 > close[25]=101 → t=25 結構失敗
+        close[24] = 102.0   # open[24]=102 > close[26]=101 → t=26 結構失敗
+        close[25] = 101.0
+        close[26] = 101.0
+        close[27] = 103.0   # close[27]=103 > open[25]=101 → t=27 結構通過
+
+        # low：確保 swing 安全
+        low = [99.0] * n
+        low[22] = 97.5
+        low[23] = 98.2
+        low[24] = 98.5
+        low[25] = 99.5
+        low[26] = 99.5
+        low[27] = 99.5
+
+        return make_augmented(
+            n, close=close, wma_fast=wma_fast,
+            wma_slow=wma_slow, low=low,
+        )
+
+    def _params(self, max_attempts: int = 3) -> StrategyParams:
+        return StrategyParams(
+            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
+            entry_retry=EntryRetryParams(long_max_attempts=max_attempts, short_max_attempts=max_attempts),
+        )
+
+    def test_default_max_attempts_is_1(self) -> None:
+        """預設 dataclass max_attempts=1（per-direction），向後相容。"""
+        p = EntryRetryParams()
+        assert p.long_max_attempts == 1
+        assert p.short_max_attempts == 1
+
+    def test_max_attempts_1_equivalent_to_old_behavior(self) -> None:
+        """max_attempts=1 → 只在交叉根檢查；t/t+1/t+2 結構失敗 → 全部 None。"""
+        df = self._build_setup()
+        strat = LongTrendStrategy(self._params(max_attempts=1))
+        for i in (25, 26, 27):
+            assert strat.detect_entry(df, i) is None, f"bar {i} should be None"
+
+    def test_max_attempts_3_retries_until_success(self) -> None:
+        """max_attempts=3 → t=25/26 結構失敗，t=27 結構通過 → 發 signal。"""
+        df = self._build_setup()
+        strat = LongTrendStrategy(self._params(max_attempts=3))
+        # t=25：cross 發生，結構失敗 → None，pending 留住
+        assert strat.detect_entry(df, 25) is None
+        assert strat._pending_cross_bar == 25
+        assert strat._pending_attempts_used == 1
+        # t=26：仍試，結構失敗 → None
+        assert strat.detect_entry(df, 26) is None
+        assert strat._pending_cross_bar == 25
+        assert strat._pending_attempts_used == 2
+        # t=27：結構通過 → 發 signal、pending 消費
+        sig = strat.detect_entry(df, 27)
+        assert sig is not None
+        assert sig.bar_index == 27
+        assert strat._pending_cross_bar is None
+        assert strat._pending_attempts_used == 0
+
+    def test_pending_dropped_after_max_attempts(self) -> None:
+        """max_attempts=2 → t=25 / t=26 都失敗 → t=27 不再嘗試（pending 已廢）。"""
+        df = self._build_setup()
+        strat = LongTrendStrategy(self._params(max_attempts=2))
+        assert strat.detect_entry(df, 25) is None  # attempt 1
+        assert strat.detect_entry(df, 26) is None  # attempt 2
+        # t=27 結構過但 attempts 已用完
+        assert strat.detect_entry(df, 27) is None
+        assert strat._pending_cross_bar is None  # pending 被清掉
+
+    def test_signal_at_cross_bar_consumes_pending(self) -> None:
+        """t=25 結構過 → 立即發 signal，t+1/t+2 不再嘗試。"""
+        df = self._build_setup()
+        # 把 t=25 結構也設成過
+        df.loc[df.index[23], "open"] = 99.0
+        df.loc[df.index[23], "close"] = 99.0
+        strat = LongTrendStrategy(self._params(max_attempts=3))
+        sig = strat.detect_entry(df, 25)
+        assert sig is not None
+        assert sig.bar_index == 25
+        # pending 已消費
+        assert strat._pending_cross_bar is None
+        # 後續 bar 沒有新 cross → 仍 None
+        assert strat.detect_entry(df, 26) is None
+        assert strat.detect_entry(df, 27) is None
+
+    def test_invalid_max_attempts(self) -> None:
+        with pytest.raises(ConfigError):
+            EntryRetryParams(long_max_attempts=0)
+        with pytest.raises(ConfigError):
+            EntryRetryParams(short_max_attempts=-1)
+
+    def test_per_direction_independent(self) -> None:
+        """long_max_attempts 與 short_max_attempts 各自獨立讀取。"""
+        from src.utils.types import Direction
+        p = EntryRetryParams(long_max_attempts=3, short_max_attempts=1)
+        assert p.max_attempts_for(Direction.LONG) == 3
+        assert p.max_attempts_for(Direction.SHORT) == 1
+
+    def test_short_strategy_retries(self) -> None:
+        """空頭也支援 retry：t=25 死叉、t/t+1 結構失敗、t+2 通過。"""
+        n = 40
+        close = [100.0] * n
+        wma_fast = [100.0] * n
+        wma_slow = [100.0] * n
+        wma_fast[24] = 100.5
+        wma_slow[24] = 100.0
+        wma_fast[25] = 99.2
+        wma_slow[25] = 99.5
+        wma_fast[26] = 99.0
+        wma_slow[26] = 99.5
+        wma_fast[27] = 98.5
+        wma_slow[27] = 99.5
+
+        # 結構：t=25/26 失敗（open[t-2] < close[t]），t=27 通過（open[25]=99 > close[27]=97）
+        close[22] = 101.0
+        close[23] = 98.0    # open[23]=98 < close[25]=99 → t=25 結構失敗
+        close[24] = 98.0    # open[24]=98 < close[26]=99 → t=26 結構失敗
+        close[25] = 99.0
+        close[26] = 99.0
+        close[27] = 97.0    # open[25]=99 > close[27]=97 → t=27 結構通過
+
+        high = [102.0] * n
+        high[22] = 102.5
+        high[23] = 101.8
+        high[24] = 101.5
+        high[25] = 100.5
+        high[26] = 100.5
+        high[27] = 100.5
+
+        df = make_augmented(
+            n, close=close, wma_fast=wma_fast,
+            wma_slow=wma_slow, high=high,
+        )
+        strat = ShortTrendStrategy(self._params(max_attempts=3))
+        assert strat.detect_entry(df, 25) is None
+        assert strat.detect_entry(df, 26) is None
+        sig = strat.detect_entry(df, 27)
+        assert sig is not None
+        assert sig.bar_index == 27
