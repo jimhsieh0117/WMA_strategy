@@ -9,7 +9,7 @@ data:
 period:
   in_sample:
     start: 2023-01-01
-    end:   2023-03-01
+    end:   2023-02-01
   out_of_sample:
     start: 2025-01-01
     end:   null   # null = 用到資料最後一根
@@ -74,8 +74,7 @@ strategy:
     stage1_slippage_buffer:   0.0003    # 0.03% 推離極值
 
     # Stage 2：保本鎖利
-    stage2_normal_trigger_r:    1.2     # 正常 R：1.2R 觸發保本
-    stage2_abnormal_trigger_r:  2.4     # 異常 R（R<手續費+滑點）：2.4R 觸發
+    stage2_normal_trigger_r:    1.2     # 1.2R 觸發保本
     stage2_buffer_r:            0.2     # 保本 stop 額外 +0.2R buffer
     # %-based OR 觸發：peak_pct = (peak − entry) / entry 達此值也觸發 stage 2。
     # 0 = 關閉（純 R-based 舊版）；>0 = OR 條件
@@ -83,24 +82,32 @@ strategy:
     stage2_pct_trigger:         0.0
 
     # Stage 3：跟蹤模式
-    stage3_normal_trigger_r:    2.4     # 正常 R：進入 Stage 3 的 trigger
-    stage3_abnormal_trigger_r:  4.8     # 異常 R：進入 Stage 3 的 trigger
+    stage3_normal_trigger_r:    2.0     # 進入 Stage 3 的 trigger
 
     #   bollinger = Bollinger band 跟蹤（原版）
-    #   r_ladder  = R 倍數階梯：peak 跨 (N+0.8)R 鎖到 (N+0.5)R；異常 R 時倍數×2
+    #   r_ladder  = R 倍數階梯：peak 跨 (N+0.8)R 鎖到 (N+0.5)R
     stage3_mode: r_ladder              # bollinger | r_ladder
 
     # bollinger mode 參數
     bollinger_period:           20
     bollinger_num_std:          2.0
 
-    # r_ladder mode 參數
-    r_ladder_normal_first_trigger:   2.8   # normal R：2.8R 第一檔啟動
+    # r_ladder mode 參數（normal R）
+    r_ladder_normal_first_trigger:   2.8   # 2.8R 第一檔啟動
     r_ladder_normal_step:            1.0   # 檔距（2.8 → 3.8 → 4.8 …）
-    r_ladder_abnormal_first_trigger: 5.6   # abnormal R：5.6R 第一檔啟動
-    r_ladder_abnormal_step:          2.0   # abnormal 檔距（5.6 → 7.6 → 9.6 …）
     r_ladder_trigger_offset:         0.3   # trigger − stop（2.8 觸發 → 鎖 2.5）
-    r_ladder_abnormal_trigger_offset: 0.6  # abnormal：5.6 觸發 → 鎖 5.0
+
+    # -------- Abnormal R fallback（防呆參數）--------
+    # 何時生效：當 R/entry < 2 × taker_fee（即 stop 距離被手續費吃光）。
+    # 當前設定下 (r_min_pct=0.0022 > 2×0.0005=0.001) 不可能觸發 abnormal，
+    # 這些參數為 dead code；保留以便未來實驗 r_min_pct=0 跑全訊號時仍有 fallback。
+    # 若 r_min_pct ≥ 2×taker_fee 卻有 abnormal trade 進到 trailing → 引擎會 raise
+    # AccountInvariantError（src/strategy/trailing.py），代表 gate 被繞過。
+    stage2_abnormal_trigger_r:        2.4
+    stage3_abnormal_trigger_r:        4.0
+    r_ladder_abnormal_first_trigger:  5.6
+    r_ladder_abnormal_step:           2.0
+    r_ladder_abnormal_trigger_offset: 0.6
 
     # ---- Early-exit（進場後 N 根 K 主動 cancel）----
     # 觀測期最後一根 K 收盤後若 stage 仍為 1 且度量值 < 門檻 → bar.close 平倉

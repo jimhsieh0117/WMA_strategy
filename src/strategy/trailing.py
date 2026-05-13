@@ -25,6 +25,7 @@ import pandas as pd
 
 from src.broker.types import Bar, BrokerConfig, Position
 from src.strategy.types import TrailingStopParams
+from src.utils.exceptions import AccountInvariantError
 from src.utils.types import Direction
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class TrailingStopController:
         broker_config: BrokerConfig,
         *,
         effective_r_override: float | None = None,
+        r_min_pct: float = 0.0,
     ) -> None:
         if position.entry_price <= 0:
             raise ValueError(f"entry_price must be > 0, got {position.entry_price}")
@@ -107,6 +109,17 @@ class TrailingStopController:
         cost_pct = 2 * broker_config.taker_fee_rate
         cost_distance = self.entry_price * cost_pct
         self.is_abnormal_r = self.R < cost_distance
+
+        # Invariant：若 engine 端 r_min_pct ≥ cost_pct（理論上不可能放 abnormal trade
+        # 進來），這裡卻偵測到 abnormal → 代表 r_min_pct gate 被繞過（unit test 構造、
+        # broker 改動、未來 refactor 漏網等）。fail-fast 不靜默吞。
+        if r_min_pct >= cost_pct and self.is_abnormal_r:
+            raise AccountInvariantError(
+                f"abnormal R reached trailing despite r_min_pct={r_min_pct:.6f} "
+                f">= 2×taker_fee={cost_pct:.6f}; "
+                f"R={self.R:.6f} entry={self.entry_price:.6f} "
+                f"r_pct={self.R / self.entry_price:.6f}"
+            )
 
         # 設定觸發點
         if self.is_abnormal_r:

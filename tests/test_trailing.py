@@ -97,6 +97,28 @@ class TestConstruction:
         assert ctrl.stage2_trigger == 2.4
         assert ctrl.stage3_trigger == 4.8
 
+    def test_abnormal_R_with_r_min_pct_gate_raises(self) -> None:
+        # r_min_pct=0.0022 應已擋掉 abnormal（cost_pct = 2×0.0005 = 0.001）
+        # 若 abnormal trade 仍進到 trailing → fail-fast
+        from src.utils.exceptions import AccountInvariantError
+        with pytest.raises(AccountInvariantError, match="abnormal R"):
+            TrailingStopController(
+                position=_long_position(entry=100.0, stop=99.95),  # R=0.05 → r_pct=0.05%
+                params=TrailingStopParams(),
+                broker_config=_broker_cfg(),
+                r_min_pct=0.0022,
+            )
+
+    def test_abnormal_R_when_r_min_pct_disabled_allowed(self) -> None:
+        # r_min_pct=0（預設）→ abnormal 仍正常運作（fallback 路徑保留）
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=99.95),
+            params=TrailingStopParams(),
+            broker_config=_broker_cfg(),
+            r_min_pct=0.0,
+        )
+        assert ctrl.is_abnormal_r is True
+
     def test_normal_R_uses_default_triggers(self) -> None:
         ctrl = TrailingStopController(
             position=_long_position(entry=100.0, stop=95.0),

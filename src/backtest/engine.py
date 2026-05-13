@@ -161,6 +161,7 @@ def run_backtest(
                             params=trailing_params,
                             broker_config=broker.config,
                             effective_r_override=effective_r_override,
+                            r_min_pct=config.r_min_pct,
                         )
                         trailings[pid] = controller
                         logger.debug(
