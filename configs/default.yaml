@@ -1,4 +1,31 @@
 # WMA Strategy 預設設定（對應 ARCHITECTURE.md §4 + §11 三階段止損）
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# 功能總覽（可切換的模組與模式）
+# ═══════════════════════════════════════════════════════════════════════════
+# 區塊                  欄位                  可選值                         備註
+# ─────────────────────────────────────────────────────────────────────────────
+# data                  timeframe             1m / 3m / 5m / 15m / 30m       影響暖機與 sharpe 年化倍數
+#                                             / 1H / 4H
+# account               sizing_mode           pct  | risk                    "risk" 反推 qty；"pct" 簡單比例
+# account               risk_per_trade_pct    0.0..0.10                      >0 啟用動態 risk（覆蓋固定 USDT）
+# account               allow_pyramiding      bool                           true=多倉並行；false=單倉
+# account               r_min_pct             >= 0                           R/entry 噪音門檻；0=關
+# account               entry_hour_blacklist  list[int 0..23]                UTC 小時黑名單；[]=關
+# trailing              stage3_mode           bollinger | r_ladder           跟蹤模式（exit 策略）
+# trailing              stage2_pct_trigger    >= 0                           %-based OR 觸發；0=純 R-based
+# trailing              early_exit_enabled    bool                           進場 N 根後主動 cancel；false=關
+# trailing              early_exit_metric     peak | peak_pct | close        early-exit 度量
+# signal_filter         mode                  off | body_sum | body_sq_sum   進場 K 實體比例濾網
+# chop_filter           enabled               bool                           BBW/ATR/ADX 三條件 AND 濾網
+# structure_filter      enabled               bool                           市場結構順勢濾網（pivot BoS/CHoCH）
+# structure_filter      mode                  aligned | exclude_counter      嚴格順勢 vs 只擋反向
+# r_cap                 mode                  off | rolling_avg              用歷史 R 平均抑制大 R trigger
+# backtest              log_level             DEBUG | INFO | WARNING | ERROR 日誌等級
+# backtest              force_close_at_end    bool                           回測結束強制平倉未平倉位
+# ─────────────────────────────────────────────────────────────────────────────
+# 開發中 / 預留：實盤 broker、Optuna 超參數、WFA、Monte Carlo（見 ARCHITECTURE.md §10）
+# ═══════════════════════════════════════════════════════════════════════════
 
 data:
   # 唯讀來源（PPO_TradingModel 已下載的 1m parquet）
@@ -86,8 +113,13 @@ strategy:
     # Stage 3：跟蹤模式
     stage3_normal_trigger_r:    2.0     # 進入 Stage 3 的 trigger
 
-    #   bollinger = Bollinger band 跟蹤（原版）
-    #   r_ladder  = R 倍數階梯：peak 跨 (N+0.8)R 鎖到 (N+0.5)R
+    # stage3_mode：
+    #   bollinger = Bollinger band 跟蹤（原版）— BB lower 隨價漲抬升，碰到就拉 stop
+    #               優點：適應波動性、不需 R 倍數調校
+    #               缺點：BB 易回勾、stop 跟不上突破段
+    #   r_ladder  = R 倍數階梯（目前預設）— peak 跨 (N+offset)R → stop 鎖在 N×R
+    #               優點：階梯式鎖利、突破段抓得乾淨
+    #               缺點：需要參數調校（first_trigger / step / offset）
     stage3_mode: r_ladder              # bollinger | r_ladder
 
     # bollinger mode 參數
@@ -114,8 +146,9 @@ strategy:
     # ---- Early-exit（進場後 N 根 K 主動 cancel）----
     # 觀測期最後一根 K 收盤後若 stage 仍為 1 且度量值 < 門檻 → bar.close 平倉
     # metric:
-    #   peak  = 該 bar 最大有利浮盈 / R（多 = (high − entry)/R；空鏡像）
-    #   close = 該 bar 收盤相對 entry / R（多 = (close − entry)/R；可為負）
+    #   peak     = 該 bar 最大有利浮盈 / R（多 = (high − entry)/R；空鏡像）— R 單位
+    #   peak_pct = 該 bar 最大有利浮盈 / entry（多 = (high − entry)/entry；空鏡像）— 百分比
+    #   close    = 該 bar 收盤相對 entry / R（多 = (close − entry)/R；可為負）
     # 實測（2-yr IS, 15m, WMA 4/6）：
     #   first_close_r 比 first_peak_r 更乾淨；close < −0.5R cut 24.6% s1 vs 4.7% s3 (5.2:1)
     early_exit_enabled:           false
@@ -186,5 +219,6 @@ strategy:
 backtest:
   output_dir: results
   show_progress: true
+  # 回測尾段如有未平倉位：true → 強制以最後一根 bar.close 平倉；false → 直接丟棄不入 metrics
   force_close_at_end: false
-  log_level: INFO   # DEBUG / INFO / WARNING
+  log_level: INFO   # DEBUG | INFO | WARNING | ERROR
