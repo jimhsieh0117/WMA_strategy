@@ -8,10 +8,13 @@
 
 ## 〇、專案性質
 
-- 加密貨幣（ETHUSDT 為主）多/空趨勢策略**回測**專案
-- WMA 交叉訊號 + 移動止損
+- 加密貨幣多/空趨勢策略**回測**專案；標的可由 `data.symbol` 切換（ETHUSDT / BTCUSDT / ...）
+- WMA 交叉訊號 + 三階段移動止損（Stage 1 swing → Stage 2 保本 → Stage 3 r_ladder 跟蹤）
 - 多空兩支策略**獨立帳戶回測**，最後合併權益曲線
 - Python 3.14 + 自製 event-driven 回測引擎（不用 backtesting.py）
+- 進場濾網：`signal_filter`（六根 K 實體比例）+ `chop_filter`（BBW/ATR/ADX 三條件 AND）
+- 倉位 sizing：每筆風險 = `equity_now × risk_per_trade_pct`（預設 1%）
+- 一律使用**原始 K 線**（Heikin-Ashi 已於 cffa883 完整棄用）
 - 預留實盤 broker / 超參數優化 / WFA / Monte Carlo 接口（先不實作，但保留可替換性）
 
 ---
@@ -35,7 +38,7 @@
 1. **修改兄弟專案**：不得修改 `~/Documents/GitHub/` 下任何其他專案（PPO_TradingModel、Alpha_team、Pine_Strategies 等）的檔案。**例外**：使用者在 prompt 中明確點名允許修改某個檔案。讀取參考則永遠允許。
 2. **執行被 settings 阻擋的指令**：不繞過 `pip install` / `rm` / `git push` / `WebFetch` 等限制。需要時請使用者執行或先請求允許。
 3. **Look-ahead bias**：指標 / 策略 / broker 任何位置都不得使用未來 K 線資料。詳見 `ARCHITECTURE.md §3.1`。
-   - HA / WMA / ATR 的 `value[t]` 只能由 `bar[0..t]` 推導
+   - WMA / ATR / ADX / Bollinger / rank 等所有指標的 `value[t]` 只能由 `bar[0..t]` 推導
    - 出現 `df.shift(-1)` / `iloc[i+1:]` / `bfill()` → 必為 bug
 4. **未經告知就跑長命令**：> 30 秒的命令必須先預告（預估時間、寫入路徑、影響範圍），等使用者點頭才執行。
 5. **實盤交易程式碼**：不寫真實 API 下單邏輯。Broker 接口可以**預留**（讓未來 `BinanceLiveBroker` 能無痛接入），但不實作。
@@ -71,7 +74,7 @@
 - 若該 prompt 動到 `src/` 或其他**程式檔**（純 `.md` 文件變更不需要），用 `git commit` 一次
 - **一個 prompt = 一次 commit**（可含多檔變更）
 - Commit message 格式：英文、Conventional Commits 風格
-  - `feat: add HA indicator with look-ahead guard`
+  - `feat: add chop filter as entry gate`
   - `fix: correct ATR rolling window min_periods`
   - `test: add WMA boundary cases`
   - `refactor: extract Signal dataclass`
@@ -121,7 +124,7 @@ class ConfigError(WMAStrategyError): ...
 ## 六、測試
 
 - 框架：`pytest`
-- **必測**：`indicators`（HA/WMA/ATR + look-ahead 截斷測試）、`broker`（成交/止損/手續費邊界）、`strategy` 訊號生成、`resampler`
+- **必測**：`indicators`（WMA / ATR / ADX / Bollinger / rank + look-ahead 截斷測試）、`broker`（成交/止損/手續費邊界）、`strategy` 訊號生成 + 各 filter gate、`resampler`
 - **可選**：`reporting`、`metrics`、entry scripts（用真實回測結果肉眼驗證即可）
 - 邊寫邊補測試，不強制 TDD；critical path 在 commit 前必須綠
 - **不需要**驗證與 PPO_TradingModel 的撮合一致性
@@ -184,14 +187,16 @@ class ConfigError(WMAStrategyError): ...
 
 ## 十一、領域知識（避免低級錯誤）
 
-- WMA / ATR：只用 ≤ 當前 K 線的資料（look-ahead 嚴禁）
-- ATR 用**原始 K 線**，不用 HA（與策略文件一致）
+- 指標一律**原始 K 線**（不再使用 Heikin-Ashi；HA 已於 cffa883 完整棄用）
+- WMA / ATR / ADX / BBW：只用 ≤ 當前 K 線的資料（look-ahead 嚴禁）
 - 止損**只能往有利方向移動**，逆向不更新
 - 限價單未成交視為廢單，不延期到下下根 K 線
 - 同根 K 線同時觸發進場與止損：先進場再判止損（單筆完整交易，含完整手續費）
 - Binance 永續 USDT-M VIP 0：taker 0.05% / maker 0.02%；本專案以 **taker 0.05%** 為主（限價含滑點 → 即時吃單）
 - 滑點：限價單偏移 0.03%（多單往上、空單往下，確保成交）
-- 帳戶設定：多空各 500 USDT 獨立帳戶，每筆倉位 60% 當前權益
+- 帳戶設定：多空各 1000 USDT 獨立帳戶；每筆風險 = `equity_now × 1%`（隨權益動態，由 `risk_per_trade_pct` 控制）
+- 內部 `leverage_cap = 8.0`（對應 Binance 端逐倉 20x），允許 2–3 筆典型倉位並存
+- `r_min_pct = 0.0022`：R/entry < 0.22% 直接拒絕進場（涵蓋 abnormal R 區域，trailing 端有 invariant 保護）
 
 ---
 
@@ -205,4 +210,4 @@ class ConfigError(WMAStrategyError): ...
 
 ---
 
-*最後更新：2026-05-11*
+*最後更新：2026-05-13*

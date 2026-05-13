@@ -9,9 +9,10 @@
 ## 一、設計目標與原則
 
 ### 1.1 業務目標
-- 實作並回測兩支對稱的 HA + WMA 交叉趨勢策略（多/空各一）
+- 實作並回測兩支對稱的 WMA 交叉趨勢策略（多/空各一），基於**原始 K 線**（HA 於 cffa883 完整棄用）
 - 兩支策略**分屬不同帳戶**，獨立回測後再**合併權益曲線**評估綜效
 - 樣本內（IS）2023-01-01 ~ 2024-12-31 用於開發/調參，**樣本外（OOS）2025-01-01 之後**作驗證
+- 標的可切換：`data.symbol` 指定（ETHUSDT / BTCUSDT / ...），檔案路徑由 `source_dir + symbol` 推導
 
 ### 1.2 工程原則
 1. **低耦合 / 高內聚**：每個模組只負責一件事，模組間用明確的資料結構溝通，不互相讀對方內部狀態
@@ -47,10 +48,11 @@
        │          └────────┬───────┘    └────────┬───────┘
        │                   │                     │
        │                   ▼                     │
-       │          ┌────────────────┐             │
-       └─────────▶│  indicators    │             │
-                  │  ha / wma /atr │             │
-                  └────────────────┘             │
+       │          ┌─────────────────────────┐    │
+       └─────────▶│  indicators             │    │
+                  │  wma / atr / bollinger  │    │
+                  │  adx / rank             │    │
+                  └─────────────────────────┘    │
                                                  ▼
                                        ┌────────────────┐
                                        │  metrics       │
@@ -69,14 +71,16 @@
 
 | 檔案 | 函式 | 輸入 | 輸出 |
 |------|------|------|------|
-| `heikin_ashi.py` | `compute_ha(df)` | OHLCV DataFrame | DataFrame，加上 `ha_open / ha_high / ha_low / ha_close` 欄 |
 | `wma.py` | `wma(series, period)` | pd.Series, int | pd.Series |
 | `atr.py` | `atr(df, period)` | OHLC DataFrame, int | pd.Series |
+| `bollinger.py` | `bollinger_bands(...)` | pd.Series, int, float | (mid, upper, lower) |
+| `adx.py` | `adx_dmi(df, period)` | OHLC DataFrame | (adx, plus_di, minus_di)（Wilder smoothing） |
+| `rank.py` | `percent_rank(series, window)` | pd.Series, int | 0..1 rolling 百分位 |
 
 **設計重點**：
 - 全部無狀態、無副作用
-- HA 必須遞迴計算（前一根 HA_Open 影響後一根），所以一次性向量化計算整個序列
-- ATR 用原始 K 線（**不是** HA），與策略文件一致
+- 所有指標一律用**原始 K 線**（Heikin-Ashi 已於 cffa883 完整棄用）
+- ADX 採 Wilder RMA 兩段平滑（等同 alpha=1/period 的 EMA），與 TradingView ADX(14) 數值一致
 
 #### ⚠️ Look-ahead bias 防護（強制要求）
 
@@ -84,19 +88,20 @@
 
 | 指標 | 允許輸入 | 禁止 |
 |------|----------|------|
-| `HA_Close[t]` | `bar[t].(O,H,L,C)` | 任何 `bar[>t]` |
-| `HA_Open[t]` | `HA_Open[t-1]`, `HA_Close[t-1]` | 任何 `bar[>=t]` |
 | `WMA[t]` | `series[t-period+1 .. t]` | `series[>t]` |
 | `ATR[t]` | `bar[t-period+1 .. t]` 的 TR | `bar[>t]` |
+| `BB[t]` | `series[t-period+1 .. t]` | `series[>t]` |
+| `ADX[t]` | `bar[0..t]`（Wilder 累積遞迴） | `bar[>t]` |
+| `rank[t]` | `series[t-window+1 .. t]` | `series[>t]` |
 
 **實作守則**：
 - 寫指標時若出現 `df.shift(-1)`、`iloc[i+1:]`、`rolling(...).shift(-x)`、`pd.Series.bfill()` → **必須是 bug**
 - 用 `min_periods=period`，不用 `min_periods=1`，避免暖機階段有不完整數值誤導策略
 - 單元測試必須包含「截斷後重算等於原序列前段」的驗證：
   ```python
-  full = compute_ha(df)
-  partial = compute_ha(df.iloc[:n])
-  assert (full.iloc[:n] == partial).all().all()  # 同一根 t 的值不應因為未來有沒有資料而改變
+  full = wma(close, period)
+  partial = wma(close.iloc[:n], period)
+  assert (full.iloc[:n].dropna() == partial.dropna()).all()
   ```
 - 違反 → `raise LookAheadError(...)`
 
@@ -123,9 +128,10 @@
 
 #### `base.py` — `BaseTrendStrategy`
 共用邏輯：
-- 接收已含指標的 DataFrame（HA、HA_WMA2、HA_WMA4、ATR）
+- 接收已含指標的 DataFrame（`wma_fast / wma_slow / bb_*`；`chop_filter` 啟用時另含 `chop_adx / chop_bbw_rank / chop_atr_rank`）
 - 在每根 K 線收盤後產出**訊號事件**（不直接執行訂單）
-- 持倉中時，每根 K 線收盤更新止損
+- 持倉狀態由外部 `TrailingStopController` 管理（per-position 實例），策略本身無狀態
+- 進場閘門：`passes_signal_filter()`（六根 K 實體比例）→ `passes_chop_filter()`（BBW/ATR/ADX AND）
 
 ```python
 @dataclass
@@ -139,11 +145,12 @@ class Signal:
 ```
 
 #### `long_strategy.py`、`short_strategy.py`
-僅實作方向特定的判斷邏輯：
-- Long: 黃金交叉 + HA_Close[-2,-3] < HA_Close[0]；止損 = `highest(N) - ATR×k`，只能上移
-- Short: 死亡交叉 + HA_Close[-2,-3] > HA_Close[0]；止損 = `lowest(N) + ATR×k`，只能下移
+僅實作方向特定的判斷邏輯（一律用原始 K 線）：
+- Long: WMA fast 上穿 slow + `close[t-2] < close[t]` AND `close[t-3] < close[t]`；Stage 1 stop = `min(low[t-N+1..t]) × (1 − slippage_buffer)`
+- Short: WMA fast 下穿 slow + `close[t-2] > close[t]` AND `close[t-3] > close[t]`；Stage 1 stop = `max(high[t-N+1..t]) × (1 + slippage_buffer)`
+- 進場後通過兩道濾網（signal_filter、chop_filter）才產生 EntrySignal
 
-**重點**：策略**只產出 Signal**，不知道帳戶餘額、不算手續費、不下實際訂單。
+**重點**：策略**只產出 Signal**，不知道帳戶餘額、不算手續費、不下實際訂單。Stage 2/3 trailing 由 `TrailingStopController` 接手。
 
 ### 3.4 `src/broker/`
 
@@ -261,51 +268,63 @@ def run_backtest(
 
 ## 四、設定檔規格 `configs/default.yaml`
 
+完整實際內容見 `configs/default.yaml`（含註解）。摘要：
+
 ```yaml
 data:
-  source_parquet: "/Users/jim_hsieh/Documents/GitHub/PPO_TradingModel/data/processed/ETHUSDT_1m.parquet"
-  symbol: "ETHUSDT"
-  timeframe: "5m"            # 可選: 1m, 3m, 5m, 15m, 30m, 1H, 4H
-
-period:
-  in_sample:
-    start: "2023-01-01"
-    end:   "2024-12-31"
-  out_of_sample:
-    start: "2025-01-01"
-    end:   null              # null = 用到資料最後
+  # 檔案路徑由 source_dir + symbol 推導為 {source_dir}/{symbol}_1m.parquet
+  # 切換標的時只改 symbol；config loader 會驗證檔案存在，否則 raise ConfigError
+  source_dir: /Users/jim_hsieh/Documents/GitHub/PPO_TradingModel/data/processed
+  symbol: BTCUSDT
+  timeframe: 15m
 
 account:
-  initial_capital: 500.0      # USDT，多空各 500
-  position_size_pct: 0.60     # 每筆倉位佔當前權益 60%
-
-fees:
-  maker_rate: 0.0002          # 0.02%
-  taker_rate: 0.0005          # 0.05%
-  slippage_pct: 0.0003        # 0.03%（用於限價單偏移）
+  initial_capital: 1000.0
+  sizing_mode: risk
+  risk_per_trade_usdt: 1.0       # fallback when pct == 0
+  risk_per_trade_pct: 0.01       # 動態 risk：equity_now × 1%（多/空獨立 equity）
+  allow_pyramiding: true
+  leverage_cap: 8.0              # Σ notional ≤ 8 × equity（對應 Binance 逐倉 20x）
+  r_min_pct: 0.0022              # R/entry < 0.22% 拒絕進場
+  entry_hour_blacklist: [0, 12]
 
 strategy:
-  # 進場條件
-  wma_fast: 2
-  wma_slow: 4
-  # 三階段拖曳止損（詳見 §10）
-  trailing:
-    swing_lookback:           4
-    stage1_slippage_buffer:   0.0003
-    stage2_normal_trigger_r:  1.2
-    stage2_abnormal_trigger_r: 2.4
-    stage2_buffer_r:          0.2
-    stage3_normal_trigger_r:  2.4
-    stage3_abnormal_trigger_r: 4.8
-    bollinger_period:         20
-    bollinger_num_std:        2.0
+  wma_fast: 4
+  wma_slow: 6
 
-backtest:
-  warmup_bars: 50             # 暖機根數（讓指標收斂）
-  output_dir: "results"
+  trailing:
+    swing_lookback: 4
+    stage2_normal_trigger_r: 1.2
+    stage2_buffer_r: 0.2
+    stage3_normal_trigger_r: 2.0
+    stage3_mode: r_ladder
+    r_ladder_normal_first_trigger: 2.5
+    r_ladder_normal_step: 0.5
+    r_ladder_trigger_offset: 0.2
+    # abnormal_* 為 dead-code fallback（r_min_pct 已覆蓋）；
+    # 若 r_min_pct ≥ 2×taker_fee 但 abnormal R 仍進到 trailing → trailing 端 raise AccountInvariantError
+
+  signal_filter:                 # 六根 K 實體比例濾網
+    mode: body_sum
+    window: 6
+    threshold: 0.60
+
+  chop_filter:                   # 盤整濾網（AND）
+    enabled: true
+    bbw_rank_min: 40.0
+    atr_rank_min: 40.0
+    adx_min: 20.0
+    # BB 週期與 trailing 完全分離（職責不同：entry gate vs exit）
+
+  r_cap:
+    mode: "off"
+    window: 100
 ```
 
-**說明**：每個策略執行時可載 `default.yaml` + 命令列覆蓋（例如 `--timeframe 15m`）。
+**Loader 守則**：
+- `source_dir + symbol → {dir}/{symbol}_1m.parquet`，檔案不存在 → ConfigError
+- `risk_per_trade_pct ∈ [0, 0.10]`，> 0.10 視為誤打（例 `0.1` vs `0.01`）
+- 所有 nested params 均 fail-fast：超過合理範圍 → ConfigError
 
 ---
 
@@ -327,9 +346,11 @@ WMA_strategy/
 │   ├── __init__.py
 │   ├── indicators/
 │   │   ├── __init__.py
-│   │   ├── heikin_ashi.py
 │   │   ├── wma.py
-│   │   └── atr.py
+│   │   ├── atr.py
+│   │   ├── bollinger.py
+│   │   ├── adx.py
+│   │   └── rank.py
 │   │
 │   ├── data/
 │   │   ├── __init__.py
@@ -627,3 +648,54 @@ pytest>=8.0
 ---
 
 **請審視，特別是第六/七/九節。確認後我會依 M1 → M6 順序實作。**
+
+---
+
+## 十三、當前實作狀態快照（2026-05-13）
+
+> 與設計階段相比已完成的改動，按功能歸類。
+
+### 13.1 已棄用的設計
+
+- **Heikin-Ashi**：原設計含 `compute_ha` 與 `entry_source` 開關，於 commit `cffa883` 完整移除。所有指標與訊號改用**原始 K 線**。
+- **固定 risk_per_trade_usdt**：仍保留為 fallback（pct=0 時用），但預設由 `risk_per_trade_pct` 動態取代。
+
+### 13.2 已上線的新功能
+
+| 功能 | 位置 | 預設 | 動機 |
+|------|------|------|------|
+| `risk_per_trade_pct` | `account.*` | 0.01（1%） | 隨權益動態調整每筆風險；equity 跌則 risk 跟跌，protect 本金曲線 |
+| `leverage_cap = 8.0` | `account.*` | 8.0 | 對應 Binance 逐倉 20x，限制並行倉位 ≤ 8×equity（典型 2–3 筆） |
+| `r_min_pct = 0.0022` | `account.*` | 0.0022 | R/entry < 0.22% 拒絕進場；同時覆蓋 abnormal R 區（< 2×taker = 0.10%） |
+| `chop_filter`（AND gate） | `strategy.chop_filter` | enabled=true | BBW_rank≥40 AND ATR_rank≥40 AND ADX≥20，避開低波動 / squeeze |
+| `r_ladder` 預設 step | `trailing.r_ladder_*` | first=2.5, step=0.5, offset=0.2 | 從 1.0/0.3 收緊到 0.5/0.2，提高 stage 3 capture |
+| `entry_hour_blacklist` | `account.*` | [0, 12] | UTC 00 / 12 整點訊號 s3% 顯著偏低，砍掉 |
+| `data.source_dir` | `data.*` | dir 路徑 | 檔名由 `symbol` 推導；切換標的只改一個欄位 |
+| abnormal R invariant | `trailing.__init__` | — | `r_min_pct ≥ 2×taker` 但 abnormal R 仍進到 trailing → `AccountInvariantError` |
+
+### 13.3 新增指標模組
+
+- `src/indicators/adx.py`：Wilder ADX + DMI（兩段 RMA 平滑）
+- `src/indicators/rank.py`：rolling percent rank（給 BBW / ATR percentile 用）
+- `src/indicators/bollinger.py`：與 trailing 共用實作；chop_filter 用獨立 period（職責分離）
+
+### 13.4 進場流程（當前）
+
+```
+detect_entry(df, bar_index):
+    1. warmup check（含 chop_filter 暖機 ~200 根 by rank_window）
+    2. WMA cross + 前 2/3 根 close 確認
+    3. passes_signal_filter()        # 六根 K 實體比例
+    4. passes_chop_filter()          # BBW / ATR / ADX AND
+    5. Stage 1 swing-based stop
+    6. entry_hour_blacklist 在 engine fill bar 階段檢查
+    7. r_min_pct / leverage_cap 在 sizing 階段檢查
+    → EntrySignal
+```
+
+### 13.5 後續方向
+
+詳見 `docs/EDGE_EXPLORATION.md`。Tier 1 優先：
+1. Exit engineering（trailing offline simulation）— stage 3 capture 62% 是最大瓶頸
+2. Volatility-adaptive trailing（dynamic k×ATR）
+3. Session × trailing 交叉

@@ -41,3 +41,6 @@ Thumbs.db
 
 # Logs
 *.log
+docs/using.md
+docs/advanced_quant_research_roadmap.md
+docs/EDGE_EXPLORATION.md

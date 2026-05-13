@@ -344,6 +344,64 @@ Stage 2 觸發後 trailing 吐到 0.17R，幾乎不貢獻。
 
 ---
 
+## 11. 報告後續實作（2026-05-13 增補）
+
+> 本節記錄報告完成後實際 baked 進主策略的功能。
+
+### 11.1 Heikin-Ashi 完整棄用（cffa883）
+
+策略所有 entry / WMA / close 訊號改用**原始 K 線**。`entry_source` 切換欄位移除；
+舊 HA / `ha_*` 欄位、HA-only test、相關 viewer panel 一併刪除。**邏輯不變**。
+
+### 11.2 Equity-scaled sizing（9a207b3）
+
+`account.risk_per_trade_pct` 預設 1%。每筆風險 = `equity_now × pct`，多/空獨立 equity。
+動機：保護資金曲線（equity 跌 → risk 跟跌），同時 equity 漲時複利。
+
+附帶 `leverage_cap = 8.0`（對應 Binance 端逐倉 20x，強平距離 ~4.5% 遠大於 0.3–0.8% 停損）。
+
+### 11.3 Chop filter baked 進策略（c3fb134）
+
+三條件 AND：`BBW_rank ≥ 40 AND ATR_rank ≥ 40 AND ADX ≥ 20`。
+yaml 預設 `enabled: true`，與 trailing 的 Bollinger 完全分離（職責不同）。
+
+**Stage 3 進場分布研究結論**（2 年 IS）：stage 3 trade 在 ADX / BBW / ATR 三指標的分布
+**與 stage 1 幾乎完全重疊**（中位數差距 ≤ 0.5）。chop_filter 不靠 selectivity，靠
+「砍掉一半 trade、留下平均 R 結構較好的」拉 PF。本質仍是樣本縮減而非真 alpha；
+保留主因是「避免低波動 + 資金費率（未模型化）損耗」。
+
+### 11.4 Abnormal R fallback invariant（a14d4a2）
+
+`r_min_pct = 0.0022` 已涵蓋 abnormal R 區域（< 2×taker = 0.10%）。
+若 `r_min_pct ≥ 2×taker_fee` 卻有 abnormal R trade 進到 trailing → raise `AccountInvariantError`。
+abnormal_* 參數保留為 dead-code fallback，未來實驗 `r_min_pct=0` 跑全訊號時仍可用。
+
+### 11.5 Symbol 切換（7d06568）
+
+`data.source_dir` + `data.symbol` 推導 `{dir}/{symbol}_1m.parquet`。切換標的只改一個欄位；
+loader 驗證檔案存在，否則 raise `ConfigError`。修正先前 symbol/parquet 不同步的 bug。
+
+### 11.6 r_ladder 預設收緊
+
+`r_ladder_normal_first_trigger: 2.5`、`step: 0.5`、`offset: 0.2`（舊：2.8 / 1.0 / 0.3）。
+意圖縮小 stage 3 結構性 giveback；實證效果見最新 2-year IS（PF 0.90）。
+
+### 11.7 最新 2-year IS（ETHUSDT 15m，含上述全部改動）
+
+| | Long | Short | Combined |
+|---|---:|---:|---:|
+| Final | 974.6 | 609.7 | 1584.3 |
+| Return | -2.5% | -39.0% | -20.8% |
+| PF | 0.99 | 0.79 | 0.90 |
+| Win% | 46.1% | 45.1% | 45.6% |
+| Sharpe | — | -1.12 | -0.74 |
+| MDD | — | 45.4% | 30.1% |
+
+Combined PF 0.90，比裸策略 (~0.77) 改善，但**未過 1.0**。
+**Short 嚴重虧損**（2023–2024 ETH 偏多）。下一步見 `docs/EDGE_EXPLORATION.md` Tier 1。
+
+---
+
 ## 附錄 A：腳本索引
 
 ```
@@ -385,7 +443,7 @@ src/
 ├── backtest/        # event-driven engine
 ├── broker/          # account + simulator
 ├── data/            # loader + resampler
-├── indicators/      # HA + WMA + ATR
+├── indicators/      # WMA + ATR + Bollinger + ADX + rank（HA 已棄用）
 ├── metrics/         # 績效指標
 ├── reporting/       # 圖表 + 摘要輸出
 ├── strategy/        # long / short trend strategy
