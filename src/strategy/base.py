@@ -17,6 +17,7 @@ import pandas as pd
 from src.indicators.adx import adx_dmi
 from src.indicators.atr import atr as compute_atr
 from src.indicators.bollinger import bollinger_bands
+from src.indicators.market_structure import compute_market_structure
 from src.indicators.rank import percent_rank
 from src.indicators.wma import wma
 from src.strategy.types import EntrySignal, StrategyParams
@@ -38,6 +39,11 @@ CHOP_FILTER_COLUMNS: tuple[str, ...] = (
     "chop_adx",
     "chop_bbw_rank",
     "chop_atr_rank",
+)
+
+# structure_filter 啟用時額外必要的欄位（只看 ms_trend，不需要事件欄位）
+STRUCTURE_FILTER_COLUMNS: tuple[str, ...] = (
+    "ms_trend",
 )
 
 
@@ -79,6 +85,14 @@ def prepare_indicators(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame
 
         adx, _pdi, _mdi = adx_dmi(df, period=cf.adx_period)
         out["chop_adx"] = adx
+
+    # 結構順勢濾網：算 market structure 並只保留 ms_trend（節省欄位污染）
+    if params.structure_filter.enabled:
+        sf = params.structure_filter
+        ms_full = compute_market_structure(
+            df, pivot_left=sf.pivot_left, pivot_right=sf.pivot_right,
+        )
+        out["ms_trend"] = ms_full["ms_trend"]
     return out
 
 
@@ -153,6 +167,40 @@ def passes_chop_filter(
         and atr_r >= cf.atr_rank_min
         and adx_v >= cf.adx_min
     )
+
+
+def passes_structure_filter(
+    df: pd.DataFrame, bar_index: int, direction: Direction, params: StrategyParams,
+) -> bool:
+    """結構順勢濾網：依 ms_trend 判定是否允許進場。
+
+    - ``mode="aligned"``：嚴格——long 要求 trend=='bull'，short 要求 trend=='bear'；
+      none（暖機/未確認）一律擋。
+    - ``mode="exclude_counter"``：只擋反向；aligned + none 都放行。
+
+    ``enabled=False`` 直接放行（不檢查欄位是否存在）。
+    """
+    sf = params.structure_filter
+    if not sf.enabled:
+        return True
+    try:
+        trend = df["ms_trend"].iat[bar_index]
+    except KeyError:
+        raise DataIntegrityError(
+            "structure_filter enabled but 'ms_trend' column missing; "
+            "did you forget to call prepare_indicators() with structure_filter enabled?"
+        )
+    # 規範化：NaN / pd.NA → 空字串
+    if not isinstance(trend, str):
+        trend = ""
+
+    aligned_trend = "bull" if direction is Direction.LONG else "bear"
+    counter_trend = "bear" if direction is Direction.LONG else "bull"
+
+    if sf.mode == "aligned":
+        return trend == aligned_trend
+    # exclude_counter
+    return trend != counter_trend
 
 
 def assert_indicators_ready(df: pd.DataFrame) -> None:

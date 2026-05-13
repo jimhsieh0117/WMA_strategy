@@ -99,6 +99,15 @@ class ChopFilterConfig:
 
 
 @dataclass(frozen=True)
+class StructureFilterConfig:
+    """結構順勢濾網設定（對應 strategy.structure_filter 區塊）。"""
+    enabled: bool = False
+    mode: str = "aligned"          # "aligned" | "exclude_counter"
+    pivot_left: int = 10
+    pivot_right: int = 10
+
+
+@dataclass(frozen=True)
 class FullConfig:
     """完整設定的扁平容器。"""
 
@@ -142,6 +151,9 @@ class FullConfig:
 
     # strategy: chop filter
     chop_filter: ChopFilterConfig
+
+    # strategy: structure filter (market structure aligned-direction gate)
+    structure_filter: StructureFilterConfig
 
     # backtest
     output_dir: Path
@@ -383,6 +395,26 @@ def load_config(path: str | Path) -> FullConfig:
         atr_period=cf_atr_p, adx_period=cf_adx_p, rank_window=cf_rank_w,
     )
 
+    # ---- strategy: structure_filter ----
+    sf_raw = strategy.get("structure_filter", {}) or {}
+    sf_enabled = bool(sf_raw.get("enabled", False))
+    sf_mode = str(sf_raw.get("mode", "aligned"))
+    if sf_mode not in ("aligned", "exclude_counter"):
+        raise ConfigError(
+            f"strategy.structure_filter.mode must be 'aligned' or 'exclude_counter', "
+            f"got {sf_mode!r}"
+        )
+    sf_pl = int(sf_raw.get("pivot_left", 10))
+    sf_pr = int(sf_raw.get("pivot_right", 10))
+    if sf_pl < 1:
+        raise ConfigError(f"strategy.structure_filter.pivot_left must be >= 1, got {sf_pl}")
+    if sf_pr < 1:
+        raise ConfigError(f"strategy.structure_filter.pivot_right must be >= 1, got {sf_pr}")
+    structure_filter = StructureFilterConfig(
+        enabled=sf_enabled, mode=sf_mode,
+        pivot_left=sf_pl, pivot_right=sf_pr,
+    )
+
     # ---- backtest ----
     output_dir = Path(backtest.get("output_dir", "results")).expanduser()
     show_progress = bool(backtest.get("show_progress", True))
@@ -417,6 +449,7 @@ def load_config(path: str | Path) -> FullConfig:
         signal_filter=signal_filter,
         r_cap=r_cap,
         chop_filter=chop_filter,
+        structure_filter=structure_filter,
         output_dir=output_dir,
         show_progress=show_progress,
         force_close_at_end=force_close_at_end,

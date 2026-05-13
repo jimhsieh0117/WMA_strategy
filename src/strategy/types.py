@@ -312,6 +312,52 @@ class ChopFilterParams:
 
 
 # --------------------------------------------------------------------------- #
+# Structure Filter：市場結構順勢進場濾網（pivot-based BoS/CHoCH）
+# --------------------------------------------------------------------------- #
+
+VALID_STRUCTURE_FILTER_MODES: tuple[str, ...] = ("aligned", "exclude_counter")
+
+
+@dataclass(frozen=True)
+class StructureFilterParams:
+    """市場結構順勢濾網。**只在進場時擋**，不影響持倉/止損流程。
+
+    判定基準：訊號 bar 的 ``ms_trend``（pivot-based BoS/CHoCH 演化出的結構方向）。
+
+    - ``mode="aligned"``：嚴格順勢——進場方向必須與 ms_trend 同向；
+      ms_trend 為 ``bull`` 才允許 long、``bear`` 才允許 short。
+      ``""``（none，暖機/未確認結構）→ 一律擋。
+    - ``mode="exclude_counter"``：寬鬆——只擋反向；aligned + none 都放行。
+
+    暖機：pivot_left + pivot_right + 一些緩衝。
+    """
+
+    enabled: bool = False
+    mode: str = "aligned"
+    pivot_left: int = 10
+    pivot_right: int = 10
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ConfigError(
+                f"structure_filter.enabled must be bool, got {self.enabled!r}"
+            )
+        if self.mode not in VALID_STRUCTURE_FILTER_MODES:
+            raise ConfigError(
+                f"structure_filter.mode must be one of {VALID_STRUCTURE_FILTER_MODES}, "
+                f"got {self.mode!r}"
+            )
+        for name, val in [
+            ("pivot_left", self.pivot_left),
+            ("pivot_right", self.pivot_right),
+        ]:
+            if not isinstance(val, int) or isinstance(val, bool) or val < 1:
+                raise ConfigError(
+                    f"structure_filter.{name} must be int >= 1, got {val!r}"
+                )
+
+
+# --------------------------------------------------------------------------- #
 # 策略總設定
 # --------------------------------------------------------------------------- #
 
@@ -334,6 +380,11 @@ class StrategyParams:
 
     # ---- 盤整濾網（chop filter，AND 邏輯）----
     chop_filter: "ChopFilterParams" = field(default_factory=lambda: ChopFilterParams())
+
+    # ---- 結構順勢濾網（market structure，BoS/CHoCH，只在進場擋）----
+    structure_filter: "StructureFilterParams" = field(
+        default_factory=lambda: StructureFilterParams(),
+    )
 
     def __post_init__(self) -> None:
         if self.wma_fast < 1 or self.wma_slow < 1:
@@ -362,12 +413,18 @@ class StrategyParams:
             if self.chop_filter.enabled
             else 0
         )
+        structure_warmup = (
+            self.structure_filter.pivot_left + self.structure_filter.pivot_right
+            if self.structure_filter.enabled
+            else 0
+        )
         return (
             max(
                 self.wma_slow,
                 self.trailing.bollinger_period,
                 self.trailing.swing_lookback,
                 chop_warmup,
+                structure_warmup,
             )
             + 3
         )

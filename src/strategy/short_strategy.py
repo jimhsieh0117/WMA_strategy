@@ -26,7 +26,7 @@ import pandas as pd
 
 from src.strategy.base import (
     BaseTrendStrategy, assert_indicators_ready,
-    passes_chop_filter, passes_signal_filter,
+    passes_chop_filter, passes_signal_filter, passes_structure_filter,
 )
 from src.strategy.types import EntrySignal
 from src.utils.types import Direction
@@ -74,6 +74,13 @@ class ShortTrendStrategy(BaseTrendStrategy):
 
         # 條件 4（可選）：盤整濾網（BBW_rank / ATR_rank / ADX）
         if not passes_chop_filter(df, bar_index, self.params):
+            return None
+
+        # 條件 5（可選）：結構順勢濾網（market structure ms_trend）
+        # 只在進場擋；持倉/止損照原邏輯走，結構翻轉不主動平倉。
+        if not passes_structure_filter(
+            df, bar_index, Direction.SHORT, self.params,
+        ):
             return None
 
         # Stage 1 初始止損：前 N 根原始 K 線最高點，再往上 buffer

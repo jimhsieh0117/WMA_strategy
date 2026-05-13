@@ -34,6 +34,7 @@ from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
 from src.strategy.types import (
     ChopFilterParams, RCapParams, SignalFilterParams, StrategyParams,
+    StructureFilterParams,
     TrailingStopParams,
 )
 from src.utils.config import FullConfig, PeriodSpec
@@ -134,6 +135,12 @@ def run_single_strategy(
         adx_period=cfg.chop_filter.adx_period,
         rank_window=cfg.chop_filter.rank_window,
     )
+    structure_filter = StructureFilterParams(
+        enabled=cfg.structure_filter.enabled,
+        mode=cfg.structure_filter.mode,
+        pivot_left=cfg.structure_filter.pivot_left,
+        pivot_right=cfg.structure_filter.pivot_right,
+    )
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
         wma_slow=cfg.wma_slow,
@@ -141,6 +148,7 @@ def run_single_strategy(
         signal_filter=signal_filter,
         r_cap=r_cap,
         chop_filter=chop_filter,
+        structure_filter=structure_filter,
     )
     augmented = prepare_indicators(df, params)
 

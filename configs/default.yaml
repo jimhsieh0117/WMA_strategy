@@ -33,7 +33,7 @@ account:
   #   = 0 關閉，沿用 risk_per_trade_usdt 固定值
   #   基數為策略各自的 equity（多/空獨立帳戶），不是合併權益
   #   上限驗證：(0, 0.10] — 超過 10% 視為誤打（如 0.1 vs 0.01）
-  risk_per_trade_pct: 0.01        # 1% equity per trade
+  risk_per_trade_pct: 0.0        # 1% equity per trade
 
   # 多倉並行（pyramiding）
   #   false：已有持倉時會略過新訊號
@@ -154,6 +154,21 @@ strategy:
     atr_period: 14
     adx_period: 14
     rank_window: 200              # ATR / BBW rolling percent rank 視窗
+
+  # 結構順勢濾網（market structure aligned-direction gate）
+  #   只在「開倉時刻」擋；既有持倉/止損不受影響，結構翻轉不會主動平倉。
+  # mode:
+  #   "aligned"         = 嚴格——進場方向必須與 ms_trend 同向（long 要 bull、short 要 bear）；
+  #                       ms_trend 為空（暖機/未確認結構）→ 一律擋
+  #   "exclude_counter" = 寬鬆——只擋反向；aligned + none 都放行
+  # 暖機：pivot_left + pivot_right 根 K 線
+  # 研究依據：report_stage_market_structure.py 在 BTC 2 年 IS：
+  #   stage 3 aligned 比例 long 60.8% / short 64.8% vs stage 1 ~48-50%（差 13-15pp）
+  structure_filter:
+    enabled: false                # 預設關閉；開啟後 long/short 各自只接同向結構訊號
+    mode: aligned                 # aligned | exclude_counter
+    pivot_left: 10                # 與 viewer market_structure 指標一致
+    pivot_right: 10
 
   # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響（trigger-only 版本）
   #   mode:

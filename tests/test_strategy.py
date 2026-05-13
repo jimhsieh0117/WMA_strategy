@@ -17,7 +17,10 @@ from src.strategy.base import (
 )
 from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
-from src.strategy.types import ChopFilterParams, EntrySignal, StrategyParams, TrailingStopParams
+from src.strategy.types import (
+    ChopFilterParams, EntrySignal, StrategyParams,
+    StructureFilterParams, TrailingStopParams,
+)
 from src.utils.exceptions import ConfigError, DataIntegrityError
 from src.utils.types import Direction
 
@@ -475,3 +478,171 @@ class TestChopFilter:
         assert (out["chop_bbw_rank"].dropna() <= 100).all()
         assert (out["chop_atr_rank"].dropna() <= 100).all()
         assert (out["chop_adx"].dropna() >= 0).all()
+
+
+class TestStructureFilter:
+    """structure_filter gate：依 ms_trend 判定是否同向／反向／中性。"""
+
+    def _entry_setup(self, n: int = 30, t: int = 25) -> dict:
+        close = [100.0] * n
+        close[t - 3] = 98.0
+        close[t - 2] = 99.0
+        close[t - 1] = 100.5
+        close[t] = 101.0
+        wma_fast = [100.0] * n
+        wma_slow = [100.0] * n
+        wma_fast[t - 1] = 99.5
+        wma_slow[t - 1] = 100.0
+        wma_fast[t] = 100.8
+        wma_slow[t] = 100.5
+        low = [99.0] * n
+        low[t - 3] = 97.5
+        low[t - 2] = 98.2
+        low[t - 1] = 98.5
+        low[t] = 99.5
+        return {"close": close, "wma_fast": wma_fast, "wma_slow": wma_slow, "low": low}
+
+    def _short_setup(self, n: int = 30, t: int = 25) -> dict:
+        # 死叉 + 趨勢結構：close[t-3]/close[t-2] 高於 close[t]
+        close = [100.0] * n
+        close[t - 3] = 102.0
+        close[t - 2] = 101.0
+        close[t - 1] = 99.5
+        close[t] = 99.0
+        wma_fast = [100.0] * n
+        wma_slow = [100.0] * n
+        wma_fast[t - 1] = 100.5
+        wma_slow[t - 1] = 100.0
+        wma_fast[t] = 99.2
+        wma_slow[t] = 99.5
+        high = [101.0] * n
+        high[t - 3] = 102.5
+        high[t - 2] = 101.8
+        high[t - 1] = 101.5
+        high[t] = 100.5
+        return {
+            "close": close, "wma_fast": wma_fast, "wma_slow": wma_slow,
+            "high": high,
+        }
+
+    def _params(self, mode: str = "aligned", *, enabled: bool = True) -> StrategyParams:
+        return StrategyParams(
+            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
+            structure_filter=StructureFilterParams(
+                enabled=enabled, mode=mode, pivot_left=2, pivot_right=2,
+            ),
+        )
+
+    # ---- mode=aligned ----
+
+    def test_aligned_long_passes_when_bull(self) -> None:
+        df = make_augmented(30, **self._entry_setup())
+        df["ms_trend"] = "bull"
+        sig = LongTrendStrategy(self._params("aligned")).detect_entry(df, 25)
+        assert sig is not None
+
+    def test_aligned_long_blocks_when_bear(self) -> None:
+        df = make_augmented(30, **self._entry_setup())
+        df["ms_trend"] = "bear"
+        assert LongTrendStrategy(self._params("aligned")).detect_entry(df, 25) is None
+
+    def test_aligned_long_blocks_when_none(self) -> None:
+        df = make_augmented(30, **self._entry_setup())
+        df["ms_trend"] = ""
+        assert LongTrendStrategy(self._params("aligned")).detect_entry(df, 25) is None
+
+    def test_aligned_short_passes_when_bear(self) -> None:
+        df = make_augmented(30, **self._short_setup())
+        df["ms_trend"] = "bear"
+        sig = ShortTrendStrategy(self._params("aligned")).detect_entry(df, 25)
+        assert sig is not None
+
+    def test_aligned_short_blocks_when_bull(self) -> None:
+        df = make_augmented(30, **self._short_setup())
+        df["ms_trend"] = "bull"
+        assert ShortTrendStrategy(self._params("aligned")).detect_entry(df, 25) is None
+
+    # ---- mode=exclude_counter ----
+
+    def test_exclude_counter_long_blocks_bear(self) -> None:
+        df = make_augmented(30, **self._entry_setup())
+        df["ms_trend"] = "bear"
+        assert LongTrendStrategy(
+            self._params("exclude_counter")
+        ).detect_entry(df, 25) is None
+
+    def test_exclude_counter_long_passes_none(self) -> None:
+        df = make_augmented(30, **self._entry_setup())
+        df["ms_trend"] = ""
+        sig = LongTrendStrategy(
+            self._params("exclude_counter")
+        ).detect_entry(df, 25)
+        assert sig is not None
+
+    def test_exclude_counter_long_passes_bull(self) -> None:
+        df = make_augmented(30, **self._entry_setup())
+        df["ms_trend"] = "bull"
+        sig = LongTrendStrategy(
+            self._params("exclude_counter")
+        ).detect_entry(df, 25)
+        assert sig is not None
+
+    # ---- disabled ----
+
+    def test_disabled_skips_gate(self) -> None:
+        df = make_augmented(30, **self._entry_setup())
+        # 沒有 ms_trend 欄位也應通過（gate 被略過）
+        sig = LongTrendStrategy(
+            self._params("aligned", enabled=False)
+        ).detect_entry(df, 25)
+        assert sig is not None
+
+    # ---- prepare_indicators ----
+
+    def test_prepare_indicators_populates_ms_trend(self) -> None:
+        params = StrategyParams(
+            structure_filter=StructureFilterParams(
+                enabled=True, pivot_left=3, pivot_right=3,
+            ),
+        )
+        idx = pd.date_range("2024-01-01", periods=100, freq="5min")
+        rng = np.random.default_rng(1)
+        close = 100 + np.cumsum(rng.standard_normal(100))
+        df = pd.DataFrame({
+            "open": close,
+            "high": close + np.abs(rng.standard_normal(100)),
+            "low": close - np.abs(rng.standard_normal(100)),
+            "close": close,
+            "volume": rng.uniform(1, 10, 100),
+        }, index=idx)
+        df["open"] = np.clip(df["open"], df["low"], df["high"])
+        out = prepare_indicators(df, params)
+        assert "ms_trend" in out.columns
+        # 預期值僅在 {"bull", "bear", ""} 集合內
+        unique_vals = set(out["ms_trend"].dropna().astype(str).unique())
+        assert unique_vals <= {"bull", "bear", ""}
+
+    def test_disabled_does_not_populate_ms_trend(self) -> None:
+        params = StrategyParams(
+            structure_filter=StructureFilterParams(enabled=False),
+        )
+        idx = pd.date_range("2024-01-01", periods=60, freq="5min")
+        close = np.linspace(100, 105, 60)
+        df = pd.DataFrame({
+            "open": close, "high": close + 1, "low": close - 1,
+            "close": close, "volume": np.ones(60),
+        }, index=idx)
+        out = prepare_indicators(df, params)
+        assert "ms_trend" not in out.columns
+
+    # ---- ConfigError ----
+
+    def test_invalid_mode_raises(self) -> None:
+        with pytest.raises(ConfigError):
+            StructureFilterParams(mode="wrong_mode")
+
+    def test_invalid_pivot_raises(self) -> None:
+        with pytest.raises(ConfigError):
+            StructureFilterParams(pivot_left=0)
+        with pytest.raises(ConfigError):
+            StructureFilterParams(pivot_right=-1)
