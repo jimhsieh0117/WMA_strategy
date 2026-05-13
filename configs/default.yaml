@@ -180,9 +180,13 @@ strategy:
   # 研究依據：sweep_chop_filters_combo.py IS PF 0.768 → 0.96（n 1300+ → 874）
   chop_filter:
     enabled: true
-    bbw_rank_min: 40.0            # BBW 百分位下界（%）
-    atr_rank_min: 40.0            # ATR 百分位下界（%）
-    adx_min: 20.0                 # ADX 絕對值下界
+    # 波動門檻（sweep_chop_volatility.py 2-yr IS sweep）：
+    #   40 → PF 1.50 / pnl +207（最高 PF）
+    #    5 → PF 1.35 / pnl +243（最高 pnl；新訊號 s3 占比 29.5% 接近自然 34%）
+    # 取 5 以擴大訊號池捕捉更多 alpha，多單獲利由 +209 提升到 +249
+    bbw_rank_min: 5.0             # BBW 百分位下界（%）
+    atr_rank_min: 5.0             # ATR 百分位下界（%）
+    adx_min: 20.0                 # ADX 絕對值下界（trend strength，不在這次 sweep 範圍）
     bb_period: 20                 # 獨立 BB 週期（與 trailing 分開）
     bb_num_std: 2.0
     atr_period: 14

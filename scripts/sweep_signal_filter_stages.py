@@ -27,8 +27,8 @@ from scripts._runner import run_single_strategy  # noqa: E402
 from src.utils.config import SignalFilterConfig, load_config  # noqa: E402
 
 
-THRESHOLDS = [round(0.65 + i * 0.01, 2) for i in range(21)]  # 0.65..0.85 step 0.01
-WINDOW = 6
+THRESHOLDS = [round(0.65 + i * 0.01, 2) for i in range(16)]  # 0.65..0.80 step 0.01
+WINDOW = 4
 
 
 def stage_summary(trades: list, direction: str) -> dict:
