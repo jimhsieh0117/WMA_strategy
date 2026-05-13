@@ -78,7 +78,7 @@ def _ms_markers(df: pd.DataFrame) -> list[dict]:
             "position": "aboveBar",
             "color": "#dc2626",
             "shape": "circle",
-            "size": 0,  # LWC v4: 0=small
+            "size": 1,  # LWC v4: 1=small, 2=default
             "text": "",
         })
     # swing low → circle 綠
@@ -89,7 +89,7 @@ def _ms_markers(df: pd.DataFrame) -> list[dict]:
             "position": "belowBar",
             "color": "#16a34a",
             "shape": "circle",
-            "size": 0,
+            "size": 1,
             "text": "",
         })
     # BoS / CHoCH → 文字標
