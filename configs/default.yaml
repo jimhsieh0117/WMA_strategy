@@ -9,7 +9,7 @@ data:
 period:
   in_sample:
     start: 2023-01-01
-    end:   2023-02-01
+    end:   2023-03-01
   out_of_sample:
     start: 2025-01-01
     end:   null   # null = 用到資料最後一根
@@ -93,9 +93,9 @@ strategy:
     bollinger_num_std:          2.0
 
     # r_ladder mode 參數（normal R）
-    r_ladder_normal_first_trigger:   2.8   # 2.8R 第一檔啟動
-    r_ladder_normal_step:            1.0   # 檔距（2.8 → 3.8 → 4.8 …）
-    r_ladder_trigger_offset:         0.3   # trigger − stop（2.8 觸發 → 鎖 2.5）
+    r_ladder_normal_first_trigger:   2.5   # 2.8R 第一檔啟動
+    r_ladder_normal_step:            0.5   # 檔距（2.8 → 3.8 → 4.8 …）
+    r_ladder_trigger_offset:         0.2   # trigger − stop（2.8 觸發 → 鎖 2.5）
 
     # -------- Abnormal R fallback（防呆參數）--------
     # 何時生效：當 R/entry < 2 × taker_fee（即 stop 距離被手續費吃光）。
@@ -134,6 +134,24 @@ strategy:
     mode: body_sum
     window: 6
     threshold: 0.60
+
+  # 盤整濾網（chop filter，AND 邏輯：三條件全過才放行）
+  #   BBW_rank ≥ bbw_rank_min  AND  ATR_rank ≥ atr_rank_min  AND  ADX ≥ adx_min
+  # 動機：
+  #   - 避免在低波動 / squeeze 區間做單（資金費率成本還未模型化，先用波動門檻護盤）
+  #   - 與 trailing 的 Bollinger band **不共用**（職責分離：entry gate vs exit）
+  # 暖機：~ rank_window 根 K 線（預設 200）→ 開頭 ~200 根訊號必拒絕
+  # 研究依據：sweep_chop_filters_combo.py IS PF 0.768 → 0.96（n 1300+ → 874）
+  chop_filter:
+    enabled: true
+    bbw_rank_min: 40.0            # BBW 百分位下界（%）
+    atr_rank_min: 40.0            # ATR 百分位下界（%）
+    adx_min: 20.0                 # ADX 絕對值下界
+    bb_period: 20                 # 獨立 BB 週期（與 trailing 分開）
+    bb_num_std: 2.0
+    atr_period: 14
+    adx_period: 14
+    rank_window: 200              # ATR / BBW rolling percent rank 視窗
 
   # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響（trigger-only 版本）
   #   mode:

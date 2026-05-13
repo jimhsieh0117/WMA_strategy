@@ -257,6 +257,61 @@ class RCapParams:
 
 
 # --------------------------------------------------------------------------- #
+# Chop Filter：盤整 / 低波動濾網（AND 邏輯）
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class ChopFilterParams:
+    """盤整濾網。三條件 AND：BBW_rank ≥ bbw_rank_min AND ATR_rank ≥ atr_rank_min
+    AND ADX ≥ adx_min。低於門檻 → 拒絕進場。
+
+    與 trailing 的 Bollinger band **不共用**：chop_filter 是 entry gate、trailing 是
+    exit 機制，職責分離；雖然 default 參數一致（period=20、num_std=2），但兩邊
+    獨立 config，未來可個別實驗。
+
+    暖機：max(rank_window, bb_period, atr_period, 2×adx_period) 根 K 線。
+    rank_window=200 主導，前 ~200 根 chop_filter 必拒絕（rank=NaN）。
+
+    研究依據（IS 2 年 stage 3 entry 分布）：stage 3 在這三個指標的分布與 stage 1
+    幾乎重疊，本身不是強 alpha。baking 進策略的主因是「避開低波動 + 未來資金
+    費率成本」，靠提高每筆趨勢強度間接護盤。
+    """
+
+    enabled: bool = False         # dataclass 預設關閉；yaml 顯式設 true 開啟
+    bbw_rank_min: float = 40.0    # BBW 百分位（0..100）下界
+    atr_rank_min: float = 40.0    # ATR 百分位（0..100）下界
+    adx_min: float = 20.0         # ADX 絕對值下界
+    # 指標獨立週期（與 trailing 完全分開）
+    bb_period: int = 20
+    bb_num_std: float = 2.0
+    atr_period: int = 14
+    adx_period: int = 14
+    rank_window: int = 200        # ATR / BBW rolling percent rank 視窗
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise ConfigError(f"chop_filter.enabled must be bool, got {self.enabled!r}")
+        for name, val in [
+            ("bbw_rank_min", self.bbw_rank_min),
+            ("atr_rank_min", self.atr_rank_min),
+        ]:
+            if not 0 <= val <= 100:
+                raise ConfigError(f"chop_filter.{name} must be in [0, 100], got {val}")
+        if self.adx_min < 0:
+            raise ConfigError(f"chop_filter.adx_min must be >= 0, got {self.adx_min}")
+        if self.bb_num_std <= 0:
+            raise ConfigError(f"chop_filter.bb_num_std must be > 0, got {self.bb_num_std}")
+        for name, val, lo in [
+            ("bb_period", self.bb_period, 2),
+            ("atr_period", self.atr_period, 1),
+            ("adx_period", self.adx_period, 1),
+            ("rank_window", self.rank_window, 2),
+        ]:
+            if not isinstance(val, int) or isinstance(val, bool) or val < lo:
+                raise ConfigError(f"chop_filter.{name} must be int >= {lo}, got {val}")
+
+
+# --------------------------------------------------------------------------- #
 # 策略總設定
 # --------------------------------------------------------------------------- #
 
@@ -277,6 +332,9 @@ class StrategyParams:
     # ---- R-cap（可選）----
     r_cap: RCapParams = field(default_factory=RCapParams)
 
+    # ---- 盤整濾網（chop filter，AND 邏輯）----
+    chop_filter: "ChopFilterParams" = field(default_factory=lambda: ChopFilterParams())
+
     def __post_init__(self) -> None:
         if self.wma_fast < 1 or self.wma_slow < 1:
             raise ConfigError(
@@ -291,13 +349,25 @@ class StrategyParams:
     def warmup_bars(self) -> int:
         """暖機所需最少根數，超過此值後策略才會產生有效訊號。
 
-        包含：WMA(slow) 暖機、Bollinger 暖機、swing lookback、進場條件回看 3 根。
+        包含：WMA(slow) / Bollinger / swing / chop_filter 的最大暖機 + 進場回看 3 根。
+        chop_filter 啟用時暖機由 rank_window 主導（預設 200）。
         """
+        chop_warmup = (
+            max(
+                self.chop_filter.rank_window,
+                self.chop_filter.bb_period,
+                self.chop_filter.atr_period,
+                2 * self.chop_filter.adx_period,
+            )
+            if self.chop_filter.enabled
+            else 0
+        )
         return (
             max(
                 self.wma_slow,
                 self.trailing.bollinger_period,
                 self.trailing.swing_lookback,
+                chop_warmup,
             )
             + 3
         )

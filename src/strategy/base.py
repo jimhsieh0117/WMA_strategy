@@ -14,7 +14,10 @@ from abc import ABC, abstractmethod
 
 import pandas as pd
 
+from src.indicators.adx import adx_dmi
+from src.indicators.atr import atr as compute_atr
 from src.indicators.bollinger import bollinger_bands
+from src.indicators.rank import percent_rank
 from src.indicators.wma import wma
 from src.strategy.types import EntrySignal, StrategyParams
 from src.utils.exceptions import DataIntegrityError
@@ -28,6 +31,13 @@ REQUIRED_INDICATOR_COLUMNS: tuple[str, ...] = (
     "bb_middle",
     "bb_upper",
     "bb_lower",
+)
+
+# chop_filter 啟用時額外必要的欄位
+CHOP_FILTER_COLUMNS: tuple[str, ...] = (
+    "chop_adx",
+    "chop_bbw_rank",
+    "chop_atr_rank",
 )
 
 
@@ -53,6 +63,22 @@ def prepare_indicators(df: pd.DataFrame, params: StrategyParams) -> pd.DataFrame
     out["bb_middle"] = bb_mid
     out["bb_upper"] = bb_up
     out["bb_lower"] = bb_lo
+
+    # chop_filter 指標：與 trailing BB **完全獨立**（職責不同 → entry gate vs exit）
+    if params.chop_filter.enabled:
+        cf = params.chop_filter
+        # chop 用自己的 BB 算 BBW（避免污染 trailing 的 stop 計算）
+        chop_mid, chop_up, chop_lo = bollinger_bands(
+            df["close"], period=cf.bb_period, num_std=cf.bb_num_std, ma_type="wma",
+        )
+        chop_bbw = (chop_up - chop_lo) / chop_mid.replace(0, pd.NA)
+        out["chop_bbw_rank"] = percent_rank(chop_bbw.astype(float), cf.rank_window) * 100.0
+
+        chop_atr = compute_atr(df, period=cf.atr_period)
+        out["chop_atr_rank"] = percent_rank(chop_atr, cf.rank_window) * 100.0
+
+        adx, _pdi, _mdi = adx_dmi(df, period=cf.adx_period)
+        out["chop_adx"] = adx
     return out
 
 
@@ -98,6 +124,35 @@ def passes_signal_filter(
     if direction is Direction.LONG:
         return bull_ratio >= sf.threshold
     return bull_ratio <= (1.0 - sf.threshold)
+
+
+def passes_chop_filter(
+    df: pd.DataFrame, bar_index: int, params: StrategyParams,
+) -> bool:
+    """盤整濾網：BBW_rank、ATR_rank、ADX 皆達門檻才放行。
+
+    暖機未滿（任一欄為 NaN）→ 不放行（保守處理）。
+    """
+    cf = params.chop_filter
+    if not cf.enabled:
+        return True
+    try:
+        bbw_r = df["chop_bbw_rank"].iat[bar_index]
+        atr_r = df["chop_atr_rank"].iat[bar_index]
+        adx_v = df["chop_adx"].iat[bar_index]
+    except KeyError:
+        # 防呆：chop_filter 開啟但 prepare_indicators 沒生欄位
+        raise DataIntegrityError(
+            "chop_filter enabled but indicator columns missing; "
+            "did you forget to call prepare_indicators() with chop_filter enabled?"
+        )
+    if pd.isna(bbw_r) or pd.isna(atr_r) or pd.isna(adx_v):
+        return False
+    return (
+        bbw_r >= cf.bbw_rank_min
+        and atr_r >= cf.atr_rank_min
+        and adx_v >= cf.adx_min
+    )
 
 
 def assert_indicators_ready(df: pd.DataFrame) -> None:

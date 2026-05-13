@@ -85,6 +85,20 @@ class SignalFilterConfig:
 
 
 @dataclass(frozen=True)
+class ChopFilterConfig:
+    """盤整濾網設定（對應 strategy.chop_filter 區塊）。"""
+    enabled: bool = True
+    bbw_rank_min: float = 40.0
+    atr_rank_min: float = 40.0
+    adx_min: float = 20.0
+    bb_period: int = 20
+    bb_num_std: float = 2.0
+    atr_period: int = 14
+    adx_period: int = 14
+    rank_window: int = 200
+
+
+@dataclass(frozen=True)
 class FullConfig:
     """完整設定的扁平容器。"""
 
@@ -125,6 +139,9 @@ class FullConfig:
 
     # strategy: r_cap
     r_cap: RCapConfig
+
+    # strategy: chop filter
+    chop_filter: ChopFilterConfig
 
     # backtest
     output_dir: Path
@@ -316,6 +333,40 @@ def load_config(path: str | Path) -> FullConfig:
         raise ConfigError(f"strategy.r_cap.window must be >= 1, got {rc_window}")
     r_cap = RCapConfig(mode=rc_mode, window=rc_window)
 
+    # ---- strategy: chop_filter ----
+    cf_raw = strategy.get("chop_filter", {}) or {}
+    cf_enabled = bool(cf_raw.get("enabled", True))
+    cf_bbw = float(cf_raw.get("bbw_rank_min", 40.0))
+    cf_atr = float(cf_raw.get("atr_rank_min", 40.0))
+    cf_adx = float(cf_raw.get("adx_min", 20.0))
+    if not 0 <= cf_bbw <= 100:
+        raise ConfigError(f"strategy.chop_filter.bbw_rank_min must be in [0, 100], got {cf_bbw}")
+    if not 0 <= cf_atr <= 100:
+        raise ConfigError(f"strategy.chop_filter.atr_rank_min must be in [0, 100], got {cf_atr}")
+    if cf_adx < 0:
+        raise ConfigError(f"strategy.chop_filter.adx_min must be >= 0, got {cf_adx}")
+    cf_bb_period = int(cf_raw.get("bb_period", 20))
+    cf_bb_std = float(cf_raw.get("bb_num_std", 2.0))
+    cf_atr_p = int(cf_raw.get("atr_period", 14))
+    cf_adx_p = int(cf_raw.get("adx_period", 14))
+    cf_rank_w = int(cf_raw.get("rank_window", 200))
+    if cf_bb_std <= 0:
+        raise ConfigError(f"strategy.chop_filter.bb_num_std must be > 0, got {cf_bb_std}")
+    for name, val, lo in [
+        ("bb_period", cf_bb_period, 2),
+        ("atr_period", cf_atr_p, 1),
+        ("adx_period", cf_adx_p, 1),
+        ("rank_window", cf_rank_w, 2),
+    ]:
+        if val < lo:
+            raise ConfigError(f"strategy.chop_filter.{name} must be >= {lo}, got {val}")
+    chop_filter = ChopFilterConfig(
+        enabled=cf_enabled,
+        bbw_rank_min=cf_bbw, atr_rank_min=cf_atr, adx_min=cf_adx,
+        bb_period=cf_bb_period, bb_num_std=cf_bb_std,
+        atr_period=cf_atr_p, adx_period=cf_adx_p, rank_window=cf_rank_w,
+    )
+
     # ---- backtest ----
     output_dir = Path(backtest.get("output_dir", "results")).expanduser()
     show_progress = bool(backtest.get("show_progress", True))
@@ -349,6 +400,7 @@ def load_config(path: str | Path) -> FullConfig:
         trailing=trailing,
         signal_filter=signal_filter,
         r_cap=r_cap,
+        chop_filter=chop_filter,
         output_dir=output_dir,
         show_progress=show_progress,
         force_close_at_end=force_close_at_end,

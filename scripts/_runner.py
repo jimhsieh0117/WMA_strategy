@@ -32,7 +32,10 @@ from src.reporting.plotter import plot_drawdown, plot_equity_curves
 from src.strategy.base import BaseTrendStrategy, prepare_indicators
 from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
-from src.strategy.types import RCapParams, SignalFilterParams, StrategyParams, TrailingStopParams
+from src.strategy.types import (
+    ChopFilterParams, RCapParams, SignalFilterParams, StrategyParams,
+    TrailingStopParams,
+)
 from src.utils.config import FullConfig, PeriodSpec
 
 logger = logging.getLogger(__name__)
@@ -120,12 +123,24 @@ def run_single_strategy(
         mode=cfg.r_cap.mode,  # type: ignore[arg-type]
         window=cfg.r_cap.window,
     )
+    chop_filter = ChopFilterParams(
+        enabled=cfg.chop_filter.enabled,
+        bbw_rank_min=cfg.chop_filter.bbw_rank_min,
+        atr_rank_min=cfg.chop_filter.atr_rank_min,
+        adx_min=cfg.chop_filter.adx_min,
+        bb_period=cfg.chop_filter.bb_period,
+        bb_num_std=cfg.chop_filter.bb_num_std,
+        atr_period=cfg.chop_filter.atr_period,
+        adx_period=cfg.chop_filter.adx_period,
+        rank_window=cfg.chop_filter.rank_window,
+    )
     params = StrategyParams(
         wma_fast=cfg.wma_fast,
         wma_slow=cfg.wma_slow,
         trailing=trailing,
         signal_filter=signal_filter,
         r_cap=r_cap,
+        chop_filter=chop_filter,
     )
     augmented = prepare_indicators(df, params)
 

@@ -17,7 +17,7 @@ from src.strategy.base import (
 )
 from src.strategy.long_strategy import LongTrendStrategy
 from src.strategy.short_strategy import ShortTrendStrategy
-from src.strategy.types import EntrySignal, StrategyParams, TrailingStopParams
+from src.strategy.types import ChopFilterParams, EntrySignal, StrategyParams, TrailingStopParams
 from src.utils.exceptions import ConfigError, DataIntegrityError
 from src.utils.types import Direction
 
@@ -341,3 +341,137 @@ class TestIntegration:
         strat = LongTrendStrategy(StrategyParams())
         for i in range(len(augmented)):
             strat.detect_entry(augmented, i)
+
+
+class TestChopFilter:
+    """chop_filter gate：BBW_rank / ATR_rank / ADX 三條件 AND。"""
+
+    def _augment_with_chop(
+        self, n: int, *, bbw_rank: float, atr_rank: float, adx: float,
+    ) -> pd.DataFrame:
+        df = make_augmented(n)
+        df["chop_bbw_rank"] = bbw_rank
+        df["chop_atr_rank"] = atr_rank
+        df["chop_adx"] = adx
+        return df
+
+    def _entry_setup(self, n: int = 30, t: int = 25) -> dict:
+        close = [100.0] * n
+        close[t - 3] = 98.0
+        close[t - 2] = 99.0
+        close[t - 1] = 100.5
+        close[t] = 101.0
+        wma_fast = [100.0] * n
+        wma_slow = [100.0] * n
+        wma_fast[t - 1] = 99.5
+        wma_slow[t - 1] = 100.0
+        wma_fast[t] = 100.8
+        wma_slow[t] = 100.5
+        low = [99.0] * n
+        low[t - 3] = 97.5
+        low[t - 2] = 98.2
+        low[t - 1] = 98.5
+        low[t] = 99.5
+        return {"close": close, "wma_fast": wma_fast, "wma_slow": wma_slow, "low": low}
+
+    def _build_params(self, **chop_kw) -> StrategyParams:
+        # 把 chop_filter 暖機相關週期全部壓小到 < t=25，讓測試聚焦在 gate 邏輯
+        kw = dict(
+            enabled=True, rank_window=10,
+            bb_period=5, atr_period=5, adx_period=5,
+            **chop_kw,
+        )
+        return StrategyParams(
+            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
+            chop_filter=ChopFilterParams(**kw),
+        )
+
+    def test_passes_when_all_above_thresholds(self) -> None:
+        params = self._build_params(
+            bbw_rank_min=40.0, atr_rank_min=40.0, adx_min=20.0,
+        )
+        setup = self._entry_setup()
+        df = make_augmented(30, **setup)
+        df["chop_bbw_rank"] = 50.0
+        df["chop_atr_rank"] = 50.0
+        df["chop_adx"] = 25.0
+        sig = LongTrendStrategy(params).detect_entry(df, 25)
+        assert sig is not None
+
+    def test_blocks_when_bbw_below(self) -> None:
+        params = self._build_params(
+            bbw_rank_min=40.0, atr_rank_min=40.0, adx_min=20.0,
+        )
+        setup = self._entry_setup()
+        df = make_augmented(30, **setup)
+        df["chop_bbw_rank"] = 30.0   # < 40
+        df["chop_atr_rank"] = 50.0
+        df["chop_adx"] = 25.0
+        assert LongTrendStrategy(params).detect_entry(df, 25) is None
+
+    def test_blocks_when_atr_below(self) -> None:
+        params = self._build_params(
+            bbw_rank_min=40.0, atr_rank_min=40.0, adx_min=20.0,
+        )
+        setup = self._entry_setup()
+        df = make_augmented(30, **setup)
+        df["chop_bbw_rank"] = 50.0
+        df["chop_atr_rank"] = 30.0   # < 40
+        df["chop_adx"] = 25.0
+        assert LongTrendStrategy(params).detect_entry(df, 25) is None
+
+    def test_blocks_when_adx_below(self) -> None:
+        params = self._build_params(
+            bbw_rank_min=40.0, atr_rank_min=40.0, adx_min=20.0,
+        )
+        setup = self._entry_setup()
+        df = make_augmented(30, **setup)
+        df["chop_bbw_rank"] = 50.0
+        df["chop_atr_rank"] = 50.0
+        df["chop_adx"] = 15.0   # < 20
+        assert LongTrendStrategy(params).detect_entry(df, 25) is None
+
+    def test_blocks_on_nan_warmup(self) -> None:
+        params = self._build_params(
+            bbw_rank_min=40.0, atr_rank_min=40.0, adx_min=20.0,
+        )
+        setup = self._entry_setup()
+        df = make_augmented(30, **setup)
+        df["chop_bbw_rank"] = float("nan")
+        df["chop_atr_rank"] = 50.0
+        df["chop_adx"] = 25.0
+        assert LongTrendStrategy(params).detect_entry(df, 25) is None
+
+    def test_disabled_skips_gate(self) -> None:
+        params = StrategyParams(
+            trailing=TrailingStopParams(bollinger_period=10, swing_lookback=4),
+            chop_filter=ChopFilterParams(enabled=False),
+        )
+        setup = self._entry_setup()
+        df = make_augmented(30, **setup)
+        # 沒有 chop_* 欄位也應通過（gate 被略過）
+        sig = LongTrendStrategy(params).detect_entry(df, 25)
+        assert sig is not None
+
+    def test_prepare_indicators_populates_chop_cols(self) -> None:
+        params = StrategyParams(
+            chop_filter=ChopFilterParams(enabled=True, rank_window=20)
+        )
+        idx = pd.date_range("2024-01-01", periods=300, freq="5min")
+        rng = np.random.default_rng(1)
+        close = 100 + np.cumsum(rng.standard_normal(300))
+        df = pd.DataFrame({
+            "open": close,
+            "high": close + np.abs(rng.standard_normal(300)),
+            "low": close - np.abs(rng.standard_normal(300)),
+            "close": close,
+            "volume": rng.uniform(1, 10, 300),
+        }, index=idx)
+        df["open"] = np.clip(df["open"], df["low"], df["high"])
+        out = prepare_indicators(df, params)
+        for col in ("chop_adx", "chop_bbw_rank", "chop_atr_rank"):
+            assert col in out.columns
+        # 暖機後值應落在有意義範圍
+        assert (out["chop_bbw_rank"].dropna() <= 100).all()
+        assert (out["chop_atr_rank"].dropna() <= 100).all()
+        assert (out["chop_adx"].dropna() >= 0).all()
