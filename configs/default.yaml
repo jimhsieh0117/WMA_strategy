@@ -165,7 +165,7 @@ strategy:
   # 研究依據：report_stage_market_structure.py 在 BTC 2 年 IS：
   #   stage 3 aligned 比例 long 60.8% / short 64.8% vs stage 1 ~48-50%（差 13-15pp）
   structure_filter:
-    enabled: false                # 預設關閉；開啟後 long/short 各自只接同向結構訊號
+    enabled: true                 # 預設啟用；long/short 各自只接同向結構訊號
     mode: aligned                 # aligned | exclude_counter
     pivot_left: 10                # 與 viewer market_structure 指標一致
     pivot_right: 10
