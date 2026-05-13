@@ -181,13 +181,29 @@ def load_config(path: str | Path) -> FullConfig:
         raise ConfigError(f"missing top-level section: {e}") from e
 
     # ---- data ----
-    source = Path(data["source_parquet"]).expanduser()
     timeframe = data["timeframe"]
     if timeframe not in _VALID_TIMEFRAMES:
         raise ConfigError(
             f"data.timeframe '{timeframe}' invalid; must be one of {sorted(_VALID_TIMEFRAMES)}"
         )
     symbol = str(data["symbol"])
+    # 資料夾 + symbol 推導 parquet 路徑：避免 symbol 與檔案路徑不同步的 bug。
+    # 慣例檔名為 ``{SYMBOL}_1m.parquet``，與 PPO_TradingModel data/processed/ 一致。
+    if "source_dir" not in data:
+        raise ConfigError(
+            "data.source_dir missing (改為以資料夾 + symbol 推導 parquet 路徑；"
+            "刪除舊的 data.source_parquet 並新增 data.source_dir)"
+        )
+    source_dir = Path(data["source_dir"]).expanduser()
+    if not source_dir.is_dir():
+        raise ConfigError(f"data.source_dir not a directory: {source_dir}")
+    source = source_dir / f"{symbol}_1m.parquet"
+    if not source.is_file():
+        raise ConfigError(
+            f"resolved parquet not found: {source} "
+            f"(symbol='{symbol}', source_dir='{source_dir}'); "
+            "請確認檔案存在或更新 data.symbol"
+        )
 
     # ---- period ----
     in_sample = PeriodSpec.parse(period["in_sample"], "in_sample")
