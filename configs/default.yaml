@@ -27,7 +27,7 @@ account:
   #         若 R 過小導致 notional > equity → 視為過槓桿，拒絕該筆訂單
   sizing_mode: risk                # pct | risk
   position_size_pct: 0.60         # sizing_mode=pct 時生效
-  risk_per_trade_usdt: 1.0        # sizing_mode=risk 且 risk_per_trade_pct=0 時生效（固定 USDT）
+  risk_per_trade_usdt: 10.0        # sizing_mode=risk 且 risk_per_trade_pct=0 時生效（固定 USDT）
   # 動態 risk：每筆可虧損金額 = equity_now × risk_per_trade_pct
   #   > 0 啟用，覆蓋 risk_per_trade_usdt（equity 漲 → risk 漲，equity 跌 → risk 跌）
   #   = 0 關閉，沿用 risk_per_trade_usdt 固定值
@@ -133,9 +133,10 @@ strategy:
   #   threshold: LONG 需 ratio ≥ threshold；SHORT 需 ratio ≤ (1 − threshold)
   #   window: 進場前回看根數（含訊號 K 自己，一律用原始 K）
   signal_filter:
-    mode: body_sum
+    mode: body_sum                # off | body_sum | body_sq_sum
     window: 6
-    threshold: 0.60
+    threshold: 0.73               # IS sweep (0.65..0.85 step 0.01) sweetspot：
+                                  # n=97, s3/s1=0.80, combined +207 USDT
 
   # 盤整濾網（chop filter，AND 邏輯：三條件全過才放行）
   #   BBW_rank ≥ bbw_rank_min  AND  ATR_rank ≥ atr_rank_min  AND  ADX ≥ adx_min

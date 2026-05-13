@@ -47,16 +47,18 @@ class ShortTrendStrategy(BaseTrendStrategy):
         wma_fast = df["wma_fast"]
         wma_slow = df["wma_slow"]
         close = df["close"]
+        open_ = df["open"]
 
         wma_f_t = wma_fast.iat[bar_index]
         wma_f_prev = wma_fast.iat[bar_index - 1]
         wma_s_t = wma_slow.iat[bar_index]
         wma_s_prev = wma_slow.iat[bar_index - 1]
         c_t = close.iat[bar_index]
-        c_t2 = close.iat[bar_index - 2]
-        c_t3 = close.iat[bar_index - 3]
+        # 趨勢結構確認改用 open（實驗）：t-2 / t-3 的「開盤價」與當根 close 比較
+        o_t2 = open_.iat[bar_index - 2]
+        o_t3 = open_.iat[bar_index - 3]
 
-        for v in (wma_f_t, wma_f_prev, wma_s_t, wma_s_prev, c_t, c_t2, c_t3):
+        for v in (wma_f_t, wma_f_prev, wma_s_t, wma_s_prev, c_t, o_t2, o_t3):
             if math.isnan(v):
                 return None
 
@@ -64,9 +66,11 @@ class ShortTrendStrategy(BaseTrendStrategy):
         if not ((wma_f_t < wma_s_t) and (wma_f_prev >= wma_s_prev)):
             return None
 
-        # 條件 2：交叉前 -2 / -3 根 close 高於當根
-        if not ((c_t2 > c_t) and (c_t3 > c_t)):
+        # 條件 2：交叉前 -2 根 open 高於當根 close（暫時只看 t-2）
+        if not (o_t2 > c_t):
             return None
+        # if not (o_t3 > c_t):
+        #     return None
 
         # 條件 3（可選）：進場前 N 根 K 實體比例濾網
         if not passes_signal_filter(df, bar_index, Direction.SHORT, self.params):
@@ -103,7 +107,7 @@ class ShortTrendStrategy(BaseTrendStrategy):
             reason=(
                 f"death_cross & structure: "
                 f"wma_f={wma_f_t:.4f} < wma_s={wma_s_t:.4f}, "
-                f"c[-2]={c_t2:.4f}, c[-3]={c_t3:.4f} > c[0]={c_t:.4f}, "
+                f"o[-2]={o_t2:.4f}, o[-3]={o_t3:.4f} > c[0]={c_t:.4f}, "
                 f"swing_high={swing_high:.4f}"
             ),
         )

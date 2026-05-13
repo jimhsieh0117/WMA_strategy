@@ -202,6 +202,8 @@ class TestLongEntry:
         )
         strat = LongTrendStrategy(params)
         df = self._build_setup(t=25, n=30).copy()
+        # 結構檢查現用 open[t-2]，要把 open 也推高才能讓結構失敗
+        df.loc[df.index[23], "open"] = 102.0
         df.loc[df.index[23], "close"] = 102.0
         assert strat.detect_entry(df, 25) is None
 
