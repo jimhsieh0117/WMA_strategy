@@ -22,11 +22,14 @@ class EngineConfig:
         sizing_mode: ``"pct"`` = 每筆倉位佔當前 equity 的固定比例；
             ``"risk"`` = 每筆倉位以「撞到 stop 時固定虧損 ``risk_per_trade_usdt``」反推。
         position_size_pct: ``sizing_mode="pct"`` 時生效（0 < v <= 1）。
-        risk_per_trade_usdt: ``sizing_mode="risk"`` 時生效。每筆預期最大虧損（含
-            雙向 taker fee）。公式：
+        risk_per_trade_usdt: ``sizing_mode="risk"`` 且 ``risk_per_trade_pct=0`` 時生效。
+            每筆預期最大虧損（含雙向 taker fee）。公式：
             ``qty = risk / [|entry − stop| + (entry + stop) × taker]``
             （滑點已隱含在 entry_price，不重複計）。
             若算出 ``qty × entry > equity``，視為過槓桿，**拒絕該筆進場**。
+        risk_per_trade_pct: 動態 risk。``> 0`` 啟用 → 每筆有效 risk =
+            ``equity_now × risk_per_trade_pct``，覆蓋 ``risk_per_trade_usdt``。
+            ``= 0`` 關閉，沿用固定 USDT。範圍 [0, 0.10]。
         skip_signal_when_pending: 既有 pending 限價單時，新訊號是否丟棄。
         force_close_at_end: 回測結束時若仍有持倉，是否以最後一根 close 平倉。
         allow_pyramiding: 是否允許在已持倉狀態下開新倉（多筆並行）。
@@ -41,6 +44,7 @@ class EngineConfig:
     sizing_mode: SizingMode = "pct"
     position_size_pct: float = 0.6
     risk_per_trade_usdt: float = 1.0
+    risk_per_trade_pct: float = 0.0
     skip_signal_when_pending: bool = True
     force_close_at_end: bool = False
     allow_pyramiding: bool = False
@@ -65,6 +69,11 @@ class EngineConfig:
         if self.risk_per_trade_usdt <= 0:
             raise ConfigError(
                 f"risk_per_trade_usdt must be > 0, got {self.risk_per_trade_usdt}"
+            )
+        if self.risk_per_trade_pct < 0 or self.risk_per_trade_pct > 0.10:
+            raise ConfigError(
+                "risk_per_trade_pct must be in [0, 0.10], "
+                f"got {self.risk_per_trade_pct}"
             )
         if self.leverage_cap <= 0:
             raise ConfigError(

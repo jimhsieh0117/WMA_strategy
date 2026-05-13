@@ -8,8 +8,8 @@ data:
 
 period:
   in_sample:
-    start: 2024-01-01
-    end:   2024-02-01
+    start: 2023-01-01
+    end:   2023-03-01
   out_of_sample:
     start: 2025-01-01
     end:   null   # null = 用到資料最後一根
@@ -25,14 +25,24 @@ account:
   #         若 R 過小導致 notional > equity → 視為過槓桿，拒絕該筆訂單
   sizing_mode: risk                # pct | risk
   position_size_pct: 0.60         # sizing_mode=pct 時生效
-  risk_per_trade_usdt: 1.0        # sizing_mode=risk 時生效（每筆 stop-out 的固定虧損）
+  risk_per_trade_usdt: 1.0        # sizing_mode=risk 且 risk_per_trade_pct=0 時生效（固定 USDT）
+  # 動態 risk：每筆可虧損金額 = equity_now × risk_per_trade_pct
+  #   > 0 啟用，覆蓋 risk_per_trade_usdt（equity 漲 → risk 漲，equity 跌 → risk 跌）
+  #   = 0 關閉，沿用 risk_per_trade_usdt 固定值
+  #   基數為策略各自的 equity（多/空獨立帳戶），不是合併權益
+  #   上限驗證：(0, 0.10] — 超過 10% 視為誤打（如 0.1 vs 0.01）
+  risk_per_trade_pct: 0.01        # 1% equity per trade
 
   # 多倉並行（pyramiding）
-  #   false（預設）：與舊版一致，已有持倉時會略過新訊號
+  #   false：已有持倉時會略過新訊號
   #   true：每根 K 線最多新增 1 筆，每筆獨立 stop / 獨立 trailing controller
   #         受 leverage_cap 限制總 notional：Σ open_notional + new ≤ equity × leverage_cap
   allow_pyramiding: true
-  leverage_cap: 100.0             # 過槓桿允許（使用者自承風險）；100 = 實質無上限
+  # 內部槓桿上限。對應 Binance 端建議「逐倉 20x」配置：
+  #   - 單筆峰值 leverage ≈ risk_per_trade_pct / r_pct，r_min_pct=0.0022 下 ≈ 4.5x
+  #   - leverage_cap=8 → 允許 2–3 筆典型倉位同時 open，pathological 第 4 筆被拒
+  #   - 對應 Exchange 強平距離 ~4.5%（20x），遠大於停損距離 0.3–0.8% → 不會爆倉
+  leverage_cap: 8.0
 
   # R 噪音過濾：R_price / entry_price < r_min_pct → 拒絕該筆進場
   #   原因：R 太小時 qty 變大、手續費佔比過高，趨勢段未達就被吃光

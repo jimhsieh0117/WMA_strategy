@@ -102,6 +102,7 @@ class FullConfig:
     position_size_pct: float
     sizing_mode: str  # "pct" | "risk"
     risk_per_trade_usdt: float
+    risk_per_trade_pct: float
     allow_pyramiding: bool
     leverage_cap: float
     r_min_pct: float
@@ -188,6 +189,13 @@ def load_config(path: str | Path) -> FullConfig:
     if risk_per_trade_usdt <= 0:
         raise ConfigError(
             f"account.risk_per_trade_usdt must be > 0, got {risk_per_trade_usdt}"
+        )
+    # 動態 risk：> 0 啟用 (equity × pct)，覆蓋 fixed USDT；= 0 關閉
+    risk_per_trade_pct = float(account.get("risk_per_trade_pct", 0.0))
+    if risk_per_trade_pct < 0 or risk_per_trade_pct > 0.10:
+        raise ConfigError(
+            "account.risk_per_trade_pct must be in [0, 0.10] "
+            f"(>0.10 視為誤打，例如 0.1 應為 0.01)，got {risk_per_trade_pct}"
         )
     allow_pyramiding = bool(account.get("allow_pyramiding", False))
     leverage_cap = float(account.get("leverage_cap", 1.0))
@@ -328,6 +336,7 @@ def load_config(path: str | Path) -> FullConfig:
         position_size_pct=position_size_pct,
         sizing_mode=sizing_mode,
         risk_per_trade_usdt=risk_per_trade_usdt,
+        risk_per_trade_pct=risk_per_trade_pct,
         allow_pyramiding=allow_pyramiding,
         leverage_cap=leverage_cap,
         r_min_pct=r_min_pct,

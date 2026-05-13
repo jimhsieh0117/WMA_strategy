@@ -319,6 +319,7 @@ def run_backtest(
             "sizing_mode": config.sizing_mode,
             "position_size_pct": config.position_size_pct,
             "risk_per_trade_usdt": config.risk_per_trade_usdt,
+            "risk_per_trade_pct": config.risk_per_trade_pct,
             "allow_pyramiding": config.allow_pyramiding,
             "leverage_cap": config.leverage_cap,
             "force_close_at_end": config.force_close_at_end,
@@ -394,11 +395,19 @@ def _compute_quantity(
                 f"r_too_small (r_pct={r_pct:.5f} < r_min_pct={config.r_min_pct:.5f})"
             )
 
+    # 動態 risk：pct > 0 啟用「equity × pct」，否則沿用固定 USDT
+    if config.risk_per_trade_pct > 0:
+        if equity_now <= 0:
+            return 0.0, None, False, f"equity_non_positive ({equity_now:.4f})"
+        effective_risk_usdt = equity_now * config.risk_per_trade_pct
+    else:
+        effective_risk_usdt = config.risk_per_trade_usdt
+
     # risk 模式：qty = R / [|limit-stop| + (limit+stop)×taker]
     denom = r_price + (limit_price + initial_stop) * taker_fee_rate
     if denom <= 0:
         return 0.0, None, False, "denom_non_positive"
-    quantity = config.risk_per_trade_usdt / denom
+    quantity = effective_risk_usdt / denom
     notional = quantity * limit_price
 
     if config.allow_pyramiding:
@@ -408,12 +417,12 @@ def _compute_quantity(
                 f"leverage_cap_exceeded (existing={existing_notional:.2f}, "
                 f"new={notional:.2f}, cap={cap_total:.2f})"
             )
-        return quantity, config.risk_per_trade_usdt, True, "ok"
+        return quantity, effective_risk_usdt, True, "ok"
 
     # 單倉模式維持舊行為：notional > equity 視為過槓桿
     if notional > equity_now:
         return 0.0, None, False, "single_position_overleveraged"
-    return quantity, config.risk_per_trade_usdt, True, "ok"
+    return quantity, effective_risk_usdt, True, "ok"
 
 
 def _compute_effective_r_override(

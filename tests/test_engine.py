@@ -202,6 +202,38 @@ class TestEngineRiskSizing:
         with pytest.raises(ConfigError):
             EngineConfig(entry_hour_blacklist=(0, 0))  # 重複
 
+    def test_risk_mode_pct_uses_equity(self) -> None:
+        """risk_per_trade_pct=0.01：equity=500 → 每筆 risk ≈ 5 USDT。"""
+        df = make_test_df(20)
+        df.iloc[12, df.columns.get_loc("low")] = 80.0
+        df.iloc[12, df.columns.get_loc("open")] = 99.0
+        df.iloc[12, df.columns.get_loc("close")] = 95.0
+        df.iloc[12, df.columns.get_loc("high")] = 99.5
+
+        acct, broker = _account_and_broker()  # initial_capital=500
+        strat = MockStrategy(Direction.LONG, entry_at=10, initial_stop=95.0)
+        cfg = EngineConfig(
+            sizing_mode="risk",
+            risk_per_trade_usdt=1.0,    # 應被 pct 覆蓋
+            risk_per_trade_pct=0.01,    # 500 × 0.01 = 5 USDT
+            allow_pyramiding=True, leverage_cap=100.0,
+        )
+        result = run_backtest(df, strat, acct, broker, cfg)
+
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        # 虧損應 ≈ 5 USDT（含手續費），允許 ±0.25 容錯
+        assert -5.25 < trade.net_pnl < -4.75, (
+            f"expected ~-5 USDT (equity 500 × pct 0.01), got {trade.net_pnl:.4f}"
+        )
+
+    def test_risk_per_trade_pct_validation(self) -> None:
+        from src.utils.exceptions import ConfigError
+        with pytest.raises(ConfigError):
+            EngineConfig(risk_per_trade_pct=-0.01)
+        with pytest.raises(ConfigError):
+            EngineConfig(risk_per_trade_pct=0.11)  # > 0.10 cap
+
     def test_risk_mode_rejects_when_overleveraged(self) -> None:
         df = make_test_df(20)
         # 把 stop 設得極接近 entry → R 太小 → notional 會爆

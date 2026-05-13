@@ -140,6 +140,7 @@ def run_single_strategy(
         sizing_mode=cfg.sizing_mode,  # type: ignore[arg-type]
         position_size_pct=cfg.position_size_pct,
         risk_per_trade_usdt=cfg.risk_per_trade_usdt,
+        risk_per_trade_pct=cfg.risk_per_trade_pct,
         allow_pyramiding=cfg.allow_pyramiding,
         leverage_cap=cfg.leverage_cap,
         r_min_pct=cfg.r_min_pct,
