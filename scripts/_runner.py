@@ -93,6 +93,7 @@ def run_single_strategy(
     trailing = TrailingStopParams(
         swing_lookback=cfg.trailing.swing_lookback,
         stage1_slippage_buffer=cfg.trailing.stage1_slippage_buffer,
+        stage2_enabled=cfg.trailing.stage2_enabled,
         stage2_normal_trigger_r=cfg.trailing.stage2_normal_trigger_r,
         stage2_abnormal_trigger_r=cfg.trailing.stage2_abnormal_trigger_r,
         stage2_buffer_r=cfg.trailing.stage2_buffer_r,
@@ -148,9 +149,14 @@ def run_single_strategy(
         long_max_attempts=cfg.entry_retry.long_max_attempts,
         short_max_attempts=cfg.entry_retry.short_max_attempts,
     )
+    # WMA per-direction：long / short 各自一組
+    if direction == "long":
+        wma_fast_val, wma_slow_val = cfg.wma_long_fast, cfg.wma_long_slow
+    else:
+        wma_fast_val, wma_slow_val = cfg.wma_short_fast, cfg.wma_short_slow
     params = StrategyParams(
-        wma_fast=cfg.wma_fast,
-        wma_slow=cfg.wma_slow,
+        wma_fast=wma_fast_val,
+        wma_slow=wma_slow_val,
         trailing=trailing,
         signal_filter=signal_filter,
         r_cap=r_cap,

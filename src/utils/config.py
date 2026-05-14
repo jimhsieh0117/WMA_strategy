@@ -42,6 +42,7 @@ class TrailingConfig:
     swing_lookback: int = 4
     stage1_slippage_buffer: float = 0.0003
 
+    stage2_enabled: bool = True       # False = 跳過 stage 2，stage 1 直接接 stage 3
     stage2_normal_trigger_r: float = 1.2
     stage2_abnormal_trigger_r: float = 2.4
     stage2_buffer_r: float = 0.2
@@ -148,9 +149,11 @@ class FullConfig:
     maker_fee_rate: float
     slippage_pct: float
 
-    # strategy: entry
-    wma_fast: int
-    wma_slow: int
+    # strategy: entry — WMA per-direction
+    wma_long_fast: int
+    wma_long_slow: int
+    wma_short_fast: int
+    wma_short_slow: int
 
     # strategy: trailing stop
     trailing: TrailingConfig
@@ -286,15 +289,36 @@ def load_config(path: str | Path) -> FullConfig:
     maker = float(fees["maker_fee_rate"])
     slip = float(fees["slippage_pct"])
 
-    # ---- strategy: entry ----
-    wma_fast = int(strategy["wma_fast"])
-    wma_slow = int(strategy["wma_slow"])
+    # ---- strategy: entry (WMA per-direction) ----
+    if "wma_fast" in strategy or "wma_slow" in strategy:
+        raise ConfigError(
+            "strategy.wma_fast / wma_slow 已拆成 long/short 各自設定；"
+            "請改用 wma_long_fast / wma_long_slow / wma_short_fast / wma_short_slow"
+        )
+    wma_long_fast = int(strategy["wma_long_fast"])
+    wma_long_slow = int(strategy["wma_long_slow"])
+    wma_short_fast = int(strategy["wma_short_fast"])
+    wma_short_slow = int(strategy["wma_short_slow"])
+    for name, fast, slow in [
+        ("long", wma_long_fast, wma_long_slow),
+        ("short", wma_short_fast, wma_short_slow),
+    ]:
+        if fast < 1 or slow < 1:
+            raise ConfigError(
+                f"strategy.wma_{name}_fast / wma_{name}_slow 必須 >= 1, "
+                f"got fast={fast}, slow={slow}"
+            )
+        if fast >= slow:
+            raise ConfigError(
+                f"strategy.wma_{name}_fast ({fast}) 必須 < wma_{name}_slow ({slow})"
+            )
 
     # ---- strategy: trailing ----
     trailing_raw = strategy.get("trailing", {})
     trailing = TrailingConfig(
         swing_lookback=int(trailing_raw.get("swing_lookback", 4)),
         stage1_slippage_buffer=float(trailing_raw.get("stage1_slippage_buffer", 0.0003)),
+        stage2_enabled=bool(trailing_raw.get("stage2_enabled", True)),
         stage2_normal_trigger_r=float(trailing_raw.get("stage2_normal_trigger_r", 1.2)),
         stage2_abnormal_trigger_r=float(trailing_raw.get("stage2_abnormal_trigger_r", 2.4)),
         stage2_buffer_r=float(trailing_raw.get("stage2_buffer_r", 0.2)),
@@ -483,8 +507,10 @@ def load_config(path: str | Path) -> FullConfig:
         taker_fee_rate=taker,
         maker_fee_rate=maker,
         slippage_pct=slip,
-        wma_fast=wma_fast,
-        wma_slow=wma_slow,
+        wma_long_fast=wma_long_fast,
+        wma_long_slow=wma_long_slow,
+        wma_short_fast=wma_short_fast,
+        wma_short_slow=wma_short_slow,
         trailing=trailing,
         signal_filter=signal_filter,
         r_cap=r_cap,

@@ -137,14 +137,23 @@ REGISTRY: dict[str, IndicatorRegistration] = {
                        color="#facc15", line_style="dotted"),
         ),
     ),
-    # 進場訊號用：原始 close 上的 WMA
-    "wma": IndicatorRegistration(
-        name="wma",
-        label="WMA",
+    # 進場訊號用：原始 close 上的 WMA（long / short 各一組）
+    "wma_long": IndicatorRegistration(
+        name="wma_long",
+        label="WMA (Long)",
         compute=_identity,
         overlay_series=(
-            SeriesSpec("wma_fast", "WMA Fast", color="#22d3ee"),
-            SeriesSpec("wma_slow", "WMA Slow", color="#a855f7"),
+            SeriesSpec("wma_long_fast", "WMA Long Fast", color="#22d3ee"),
+            SeriesSpec("wma_long_slow", "WMA Long Slow", color="#a855f7"),
+        ),
+    ),
+    "wma_short": IndicatorRegistration(
+        name="wma_short",
+        label="WMA (Short)",
+        compute=_identity,
+        overlay_series=(
+            SeriesSpec("wma_short_fast", "WMA Short Fast", color="#fb923c"),
+            SeriesSpec("wma_short_slow", "WMA Short Slow", color="#ef4444"),
         ),
     ),
 
@@ -193,4 +202,4 @@ REGISTRY: dict[str, IndicatorRegistration] = {
 
 def default_panels() -> list[str]:
     """預設面板組合。"""
-    return ["bollinger", "wma", "volume", "wavetrend", "market_structure"]
+    return ["bollinger", "wma_long", "wma_short", "volume", "wavetrend", "market_structure"]

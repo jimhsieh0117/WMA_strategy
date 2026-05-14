@@ -94,6 +94,9 @@ class TrailingStopParams:
     stage1_slippage_buffer: float = 0.0003  # 0.03% buffer，遠離極值方向
 
     # ---- Stage 2 ----
+    # stage2_enabled=False → Stage 2 完全跳過：stage 1 達 stage3_trigger 直接進 stage 3，
+    # 不經過「保本 + buffer」階段；stage 3 也不再用 stage2_value 當 floor。
+    stage2_enabled: bool = True
     stage2_normal_trigger_r: float = 1.2
     stage2_abnormal_trigger_r: float = 2.4
     stage2_buffer_r: float = 0.2

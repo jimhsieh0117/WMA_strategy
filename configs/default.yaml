@@ -95,8 +95,11 @@ fees:
 
 strategy:
   # 進場條件（一律使用原始 K 線）
-  wma_fast: 4
-  wma_slow: 6
+  # WMA per-direction：long 維持 4/6（穩定）、short 用 2/4（更敏感抓快下跌）
+  wma_long_fast:  4
+  wma_long_slow:  6
+  wma_short_fast: 2
+  wma_short_slow: 4
 
   # 三階段止損（ARCHITECTURE.md §11）
   trailing:
@@ -105,6 +108,9 @@ strategy:
     stage1_slippage_buffer:   0.0003    # 0.03% 推離極值
 
     # Stage 2：保本鎖利
+    # stage2_enabled=false → 完全跳過 stage 2：stage 1 達 stage3_trigger 直接進 stage 3，
+    # 不經過保本+buffer 階段；stage 3 也不用 stage2_value 當 floor。
+    stage2_enabled:             true
     stage2_normal_trigger_r:    1.2     # 1.2R 觸發保本
     stage2_buffer_r:            0.2     # 保本 stop 額外 +0.2R buffer
     # %-based OR 觸發：peak_pct = (peak − entry) / entry 達此值也觸發 stage 2。

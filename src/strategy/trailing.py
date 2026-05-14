@@ -191,15 +191,20 @@ class TrailingStopController:
             self.peak_pct = progress_pct
 
         # 2. 階段推進（單向）。Stage 1→2 額外支援 %-based OR 觸發。
-        pct_trigger = self.params.stage2_pct_trigger
-        stage2_fired = (
-            progress_r >= self.stage2_trigger
-            or (pct_trigger > 0 and progress_pct >= pct_trigger)
-        )
-        if self.stage == 1 and stage2_fired:
-            self._transition(2, bar.timestamp, progress_r)
-        if self.stage == 2 and progress_r >= self.stage3_trigger:
-            self._transition(3, bar.timestamp, progress_r)
+        # stage2_enabled=False → 跳過 stage 2，stage 1 達 stage3_trigger 直接進 stage 3。
+        if self.params.stage2_enabled:
+            pct_trigger = self.params.stage2_pct_trigger
+            stage2_fired = (
+                progress_r >= self.stage2_trigger
+                or (pct_trigger > 0 and progress_pct >= pct_trigger)
+            )
+            if self.stage == 1 and stage2_fired:
+                self._transition(2, bar.timestamp, progress_r)
+            if self.stage == 2 and progress_r >= self.stage3_trigger:
+                self._transition(3, bar.timestamp, progress_r)
+        else:
+            if self.stage == 1 and progress_r >= self.stage3_trigger:
+                self._transition(3, bar.timestamp, progress_r)
 
         # 3. 取得本階段的止損候選
         candidate = self._compute_candidate(df, bar_index)
@@ -361,6 +366,12 @@ class TrailingStopController:
         """
         if self.stage == 1:
             return None
+
+        # stage2_enabled=False：stage 3 不再用 stage2_value 當 floor，純 r_ladder/bollinger
+        if not self.params.stage2_enabled:
+            if self.params.stage3_mode == "r_ladder":
+                return self._r_ladder_stop()
+            return self._bollinger_stop(df, bar_index)
 
         stage2_value = self._stage2_breakeven_stop()
 

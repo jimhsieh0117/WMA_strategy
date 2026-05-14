@@ -90,12 +90,26 @@ def main() -> None:
         bollinger_period=cfg.trailing.bollinger_period,
         bollinger_num_std=cfg.trailing.bollinger_num_std,
     )
-    params = StrategyParams(
-        wma_fast=cfg.wma_fast,
-        wma_slow=cfg.wma_slow,
+    # 用 long 的 WMA 算 base 指標欄位（含 BB / chop / structure）
+    long_params = StrategyParams(
+        wma_fast=cfg.wma_long_fast,
+        wma_slow=cfg.wma_long_slow,
         trailing=trailing,
     )
-    augmented = prepare_indicators(df, params)
+    augmented = prepare_indicators(df, long_params)
+    augmented = augmented.rename(columns={
+        "wma_fast": "wma_long_fast",
+        "wma_slow": "wma_long_slow",
+    })
+    # 再用 short 的 WMA 算一組，只保留 wma_fast/wma_slow 欄並 rename
+    short_params = StrategyParams(
+        wma_fast=cfg.wma_short_fast,
+        wma_slow=cfg.wma_short_slow,
+        trailing=trailing,
+    )
+    short_aug = prepare_indicators(df, short_params)
+    augmented["wma_short_fast"] = short_aug["wma_fast"]
+    augmented["wma_short_slow"] = short_aug["wma_slow"]
 
     # 永遠把 REGISTRY 內所有指標都算好；前端再依 enabled 切換顯隱
     all_indicators = list(REGISTRY.values())
