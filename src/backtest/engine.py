@@ -213,8 +213,9 @@ def run_backtest(
 
         # === Step 3a: 收盤 ratchet 拖曳止損（每筆獨立）===
         # 兩階段：先全部 update（更新 stage / peak / bars_observed），再依
-        # should_early_exit 平倉。避免在 iteration 中改變 account.positions。
-        early_exit_pids: list[int] = []
+        # should_early_exit / should_time_cut 平倉。避免在 iteration 中改變
+        # account.positions。early_exit 與 time_cut 共用同一退出通道，但 reason 不同。
+        forced_exits: list[tuple[int, str]] = []  # (pid, reason)
         for pid, pos in account.positions.items():
             controller = trailings.get(pid)
             if controller is None:
@@ -230,11 +231,14 @@ def run_backtest(
                     "RATCHET %s pid=%d stop %.4f -> %.4f (stage=%d)",
                     pos.direction, pid, old_stop, new_stop, controller.stage,
                 )
+            # early_exit 優先於 time_cut（前者只在觀測期最後一根觸發，後者持續性）
             if controller.should_early_exit():
-                early_exit_pids.append(pid)
+                forced_exits.append((pid, "EARLY_CANCEL"))
+            elif controller.should_time_cut():
+                forced_exits.append((pid, "TIME_CUT"))
 
-        # === Step 3a.5: Early-exit cancel（觀測期內未達浮盈門檻）===
-        for pid in early_exit_pids:
+        # === Step 3a.5: Forced exit（early_exit / time_cut 共用）===
+        for pid, reason in forced_exits:
             pos = account.positions.get(pid)
             if pos is None:
                 continue  # 同一 bar 同時被 stage 1 stop 觸發 → 已平倉
@@ -247,15 +251,15 @@ def run_backtest(
                 exit_price=exit_price,
                 exit_timestamp=ts,
                 fee=fee,
-                reason="EARLY_CANCEL",
+                reason=reason,
                 final_stage=1,
                 peak_progress_r=controller.peak_progress_r if controller else 0.0,
             )
             logger.debug(
-                "EARLY_CANCEL %s pid=%d @ %.4f (peak_r=%.3f < %.3f)",
-                pos.direction, pid, exit_price,
+                "%s %s pid=%d @ %.4f (peak_r=%.3f, bars=%d)",
+                reason, pos.direction, pid, exit_price,
                 controller.peak_progress_r if controller else 0.0,
-                trailing_params.early_exit_min_peak_r,
+                controller.bars_observed if controller else 0,
             )
 
         # === Step 3b: 收盤偵測進場訊號 ===

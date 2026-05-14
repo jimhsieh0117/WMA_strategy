@@ -141,6 +141,15 @@ class TrailingStopParams:
     early_exit_min_peak_pct: float = 0.0
     early_exit_min_close_r: float = 0.0
 
+    # ---- Stage 1 time-cut（持續檢查：hold 已達 N 根但 stage 仍 1 且 peak 仍弱 → 強制平倉）----
+    # 跟 early_exit 的差別：early_exit 只在「觀測期最後一根 K」檢查一次；time_cut 在
+    # bars_observed >= stage1_time_cut_bars 之後每根 K 都檢查直到平倉或晉升 stage 2。
+    # 條件全滿足才平倉：stage==1 AND bars_observed >= bars AND peak_progress_r < peak_r_max。
+    # 出場價 = 該 bar.close，exit_reason="TIME_CUT"，final_stage=1。
+    stage1_time_cut_enabled: bool = False
+    stage1_time_cut_bars: int = 8
+    stage1_time_cut_peak_r_max: float = 0.5
+
     def __post_init__(self) -> None:
         for name, val, low_ok in [
             ("swing_lookback", self.swing_lookback, 1),
@@ -220,6 +229,25 @@ class TrailingStopParams:
             raise ConfigError(
                 f"early_exit_metric must be one of {VALID_EARLY_EXIT_METRICS}, "
                 f"got {self.early_exit_metric!r}"
+            )
+
+        # stage1_time_cut 驗證
+        if not isinstance(self.stage1_time_cut_enabled, bool):
+            raise ConfigError(
+                f"stage1_time_cut_enabled must be bool, "
+                f"got {self.stage1_time_cut_enabled!r}"
+            )
+        if (not isinstance(self.stage1_time_cut_bars, int)
+                or isinstance(self.stage1_time_cut_bars, bool)
+                or self.stage1_time_cut_bars < 1):
+            raise ConfigError(
+                f"stage1_time_cut_bars must be int >= 1, "
+                f"got {self.stage1_time_cut_bars}"
+            )
+        if self.stage1_time_cut_peak_r_max <= 0:
+            raise ConfigError(
+                f"stage1_time_cut_peak_r_max must be > 0, "
+                f"got {self.stage1_time_cut_peak_r_max}"
             )
 
 

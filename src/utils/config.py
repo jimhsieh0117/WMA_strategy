@@ -68,6 +68,11 @@ class TrailingConfig:
     early_exit_min_peak_pct: float = 0.0
     early_exit_min_close_r: float = 0.0
 
+    # stage 1 time-cut（持續：hold ≥ N bar 且仍 stage 1 且 peak < threshold → 強制平倉）
+    stage1_time_cut_enabled: bool = False
+    stage1_time_cut_bars: int = 8
+    stage1_time_cut_peak_r_max: float = 0.5
+
 
 @dataclass(frozen=True)
 class RCapConfig:
@@ -324,6 +329,15 @@ def load_config(path: str | Path) -> FullConfig:
         ),
         early_exit_min_close_r=float(
             trailing_raw.get("early_exit_min_close_r", 0.0)
+        ),
+        stage1_time_cut_enabled=bool(
+            trailing_raw.get("stage1_time_cut_enabled", False)
+        ),
+        stage1_time_cut_bars=int(
+            trailing_raw.get("stage1_time_cut_bars", 8)
+        ),
+        stage1_time_cut_peak_r_max=float(
+            trailing_raw.get("stage1_time_cut_peak_r_max", 0.5)
         ),
     )
 

@@ -16,6 +16,7 @@
 # trailing              stage2_pct_trigger    >= 0                           %-based OR 觸發；0=純 R-based
 # trailing              early_exit_enabled    bool                           進場 N 根後主動 cancel；false=關
 # trailing              early_exit_metric     peak | peak_pct | close        early-exit 度量
+# trailing              stage1_time_cut_enabled bool                         hold ≥ N 根仍 stage 1 且 peak 弱 → 強制平倉
 # signal_filter         mode                  off | body_sum | body_sq_sum   進場 K 實體比例濾網
 # chop_filter           enabled               bool                           BBW/ATR/ADX 三條件 AND 濾網
 # structure_filter      enabled               bool                           市場結構順勢濾網（pivot BoS/CHoCH）
@@ -158,6 +159,14 @@ strategy:
     early_exit_min_peak_r:        0.0         # peak     mode 門檻（R 單位）
     early_exit_min_peak_pct:      0.0         # peak_pct mode 門檻（fraction，e.g. 0.001 = 0.1%）
     early_exit_min_close_r:       -0.5        # close    mode 門檻（負值 = 收盤需高於 entry − 0.5R）
+
+    # Stage 1 time-cut：持倉 ≥ N 根 K 仍 stage 1 且 peak < threshold → 強制平倉
+    # 與 early_exit 差別：early_exit 只在觀測期最後一根檢查一次；time_cut 持續檢查。
+    # 動機：long s1 avg_hold 30.8 / med 13、short s1 avg 58.3 / med 16 嚴重右偏，
+    # 死撐 hold > 8 bar 且 peak < 0.5R 的訊號釋放資金與機會成本。
+    stage1_time_cut_enabled:        true
+    stage1_time_cut_bars:           8           # 進場後 N 根 K 才開始檢查（含進場 K）
+    stage1_time_cut_peak_r_max:     0.5         # peak < 此值才平（已突破代表還有機會）
 
   # 進場訊號濾網（六根 K 實體比例閘門）
   #   mode:

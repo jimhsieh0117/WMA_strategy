@@ -239,6 +239,25 @@ class TrailingStopController:
             return self._last_bar_progress_pct < self.params.early_exit_min_peak_pct
         return self._last_bar_progress_r < self.params.early_exit_min_peak_r
 
+    def should_time_cut(self) -> bool:
+        """Stage 1 time-cut：持倉已達 N 根 K 仍未晉升且 peak 仍弱 → 強制平倉。
+
+        條件（須全部滿足）：
+        1. ``stage1_time_cut_enabled`` = True
+        2. ``stage == 1``（已晉級到 stage 2/3 就交給 trailing 接手）
+        3. ``bars_observed >= stage1_time_cut_bars``
+        4. ``peak_progress_r < stage1_time_cut_peak_r_max``
+
+        engine 應在 ``update()`` 之後呼叫此方法。回傳 True 表示「該 bar.close 主動平倉」。
+        """
+        if not self.params.stage1_time_cut_enabled:
+            return False
+        if self.stage != 1:
+            return False
+        if self.bars_observed < self.params.stage1_time_cut_bars:
+            return False
+        return self.peak_progress_r < self.params.stage1_time_cut_peak_r_max
+
     @property
     def transitions(self) -> list[StageTransition]:
         """回傳目前累積的 stage 變化紀錄（防外部修改）。"""

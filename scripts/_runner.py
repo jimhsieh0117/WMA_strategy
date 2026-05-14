@@ -114,6 +114,9 @@ def run_single_strategy(
         early_exit_min_peak_r=cfg.trailing.early_exit_min_peak_r,
         early_exit_min_peak_pct=cfg.trailing.early_exit_min_peak_pct,
         early_exit_min_close_r=cfg.trailing.early_exit_min_close_r,
+        stage1_time_cut_enabled=cfg.trailing.stage1_time_cut_enabled,
+        stage1_time_cut_bars=cfg.trailing.stage1_time_cut_bars,
+        stage1_time_cut_peak_r_max=cfg.trailing.stage1_time_cut_peak_r_max,
     )
     signal_filter = SignalFilterParams(
         mode=cfg.signal_filter.mode,  # type: ignore[arg-type]

@@ -19,6 +19,7 @@ import pytest
 from src.broker.types import Bar, BrokerConfig, Position
 from src.strategy.trailing import TrailingStopController
 from src.strategy.types import TrailingStopParams
+from src.utils.exceptions import ConfigError
 from src.utils.types import Direction
 
 
@@ -883,3 +884,105 @@ class TestEarlyExitCancelPeakPctMode:
         # bar[i+1] low=99.85 → progress_pct = (100-99.85)/100 = 0.0015 < 0.002 → cancel
         ctrl.update(_bar(100.0, 100.4, 99.85, 100.3), df, 1, current_stop=105.0)
         assert ctrl.should_early_exit() is True
+
+
+class TestStage1TimeCut:
+    """Stage 1 time-cut：hold ≥ N 根 K 且仍 stage 1 且 peak < threshold → 強制平倉。"""
+
+    def test_default_disabled(self) -> None:
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(),  # stage1_time_cut_enabled=False
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(20)
+        for _ in range(15):
+            ctrl.update(_bar(100.0, 100.3, 99.6, 100.0), df, 0, current_stop=95.0)
+        assert ctrl.should_time_cut() is False
+
+    def test_long_cut_when_bars_exceeded_and_peak_weak(self) -> None:
+        # entry=100, stop=95 (R=5)，cut=8 bars, peak_r_max=0.5
+        # peak high=100.5 → peak_progress_r = (100.5-100)/5 = 0.1 < 0.5
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                stage1_time_cut_enabled=True,
+                stage1_time_cut_bars=8,
+                stage1_time_cut_peak_r_max=0.5,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(20)
+        for _ in range(7):
+            ctrl.update(_bar(100.0, 100.3, 99.6, 100.0), df, 0, current_stop=95.0)
+            assert ctrl.should_time_cut() is False  # 還沒到 bars 門檻
+        # 第 8 根：bars_observed=8 且 peak=0.06 < 0.5 → 觸發
+        ctrl.update(_bar(100.0, 100.3, 99.6, 100.0), df, 0, current_stop=95.0)
+        assert ctrl.bars_observed == 8
+        assert ctrl.should_time_cut() is True
+
+    def test_long_no_cut_when_peak_above_threshold(self) -> None:
+        # peak_r 達 0.6 > 0.5 threshold → 即使到 bars 也不平
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                stage1_time_cut_enabled=True,
+                stage1_time_cut_bars=5,
+                stage1_time_cut_peak_r_max=0.5,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(20)
+        # 第 1 根衝出 0.6R 後回落（high=103 → peak_progress_r = 0.6）
+        ctrl.update(_bar(100.0, 103.0, 99.5, 100.0), df, 0, current_stop=95.0)
+        # 後續 5 根 K 都不再衝高
+        for _ in range(5):
+            ctrl.update(_bar(100.0, 100.2, 99.7, 100.0), df, 0, current_stop=95.0)
+        assert ctrl.bars_observed >= 5
+        assert ctrl.peak_progress_r >= 0.5
+        assert ctrl.should_time_cut() is False
+
+    def test_no_cut_after_stage2_promoted(self) -> None:
+        # 一旦晉級 stage 2，即使後續 hold 長都不該 time_cut
+        ctrl = TrailingStopController(
+            position=_long_position(entry=100.0, stop=95.0),
+            params=TrailingStopParams(
+                stage1_time_cut_enabled=True,
+                stage1_time_cut_bars=3,
+                stage1_time_cut_peak_r_max=0.5,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(20)
+        # 衝到 1.2R 觸發 stage 2（high=106 → progress_r = 1.2）
+        ctrl.update(_bar(100.0, 106.0, 99.5, 100.5), df, 0, current_stop=95.0)
+        assert ctrl.stage == 2
+        # 之後 10 根 K 都 hold 不動 — 仍不該 time_cut（已不在 stage 1）
+        for _ in range(10):
+            ctrl.update(_bar(100.5, 100.7, 100.0, 100.5), df, 1, current_stop=95.0)
+        assert ctrl.should_time_cut() is False
+
+    def test_short_cut_mirrors_long(self) -> None:
+        # SHORT entry=100, stop=105 (R=5)，peak_progress_r = (100-low)/5
+        # bar low=99.7 → peak = 0.06 < 0.5
+        ctrl = TrailingStopController(
+            position=_short_position(entry=100.0, stop=105.0),
+            params=TrailingStopParams(
+                stage1_time_cut_enabled=True,
+                stage1_time_cut_bars=4,
+                stage1_time_cut_peak_r_max=0.5,
+            ),
+            broker_config=_broker_cfg(),
+        )
+        df = _make_df(20)
+        for _ in range(3):
+            ctrl.update(_bar(100.0, 100.4, 99.7, 100.0), df, 0, current_stop=105.0)
+            assert ctrl.should_time_cut() is False
+        ctrl.update(_bar(100.0, 100.4, 99.7, 100.0), df, 0, current_stop=105.0)
+        assert ctrl.should_time_cut() is True
+
+    def test_invalid_params_raises(self) -> None:
+        with pytest.raises(ConfigError):
+            TrailingStopParams(stage1_time_cut_bars=0)
+        with pytest.raises(ConfigError):
+            TrailingStopParams(stage1_time_cut_peak_r_max=0.0)
