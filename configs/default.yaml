@@ -110,7 +110,7 @@ strategy:
     # Stage 2：保本鎖利
     # stage2_enabled=false → 完全跳過 stage 2：stage 1 達 stage3_trigger 直接進 stage 3，
     # 不經過保本+buffer 階段；stage 3 也不用 stage2_value 當 floor。
-    stage2_enabled:             true
+    stage2_enabled:             false
     stage2_normal_trigger_r:    1.2     # 1.2R 觸發保本
     stage2_buffer_r:            0.2     # 保本 stop 額外 +0.2R buffer
     # %-based OR 觸發：peak_pct = (peak − entry) / entry 達此值也觸發 stage 2。
@@ -241,7 +241,7 @@ strategy:
   #   short max=3: ret -84.35% / PF 0.69 / MDD 86.9%（爆倉等級，禁用！）
   # → 目前兩邊都先 1（保守）；之後若做更精細的 long 端 retry 實驗可只動 long_max_attempts。
   entry_retry:
-    long_max_attempts: 1
+    long_max_attempts: 2
     short_max_attempts: 1
 
   # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響（trigger-only 版本）
