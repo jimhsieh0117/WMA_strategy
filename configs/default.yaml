@@ -80,11 +80,12 @@ account:
 
   # 進場時段黑名單（UTC，0..23）。命中 → 該筆 pending 被拒絕。
   # 判斷對象為「fill bar 的 hour」（pending 撮合所在的 K 線），與 analyze_day_hour.py 一致。
-  # 實測（2-yr IS, 15m, WMA 4/6）：
-  #   00 UTC: s3% 9.74% / avg_pnl −0.39
-  #   12 UTC: s3% 12.12% / avg_pnl −0.37（兩個整點顯著低於 baseline 18.87%）
-  # 空 list = 不啟用
-  entry_hour_blacklist: [0, 12]
+  # 空 list = 不啟用（當前選擇）
+  #
+  # 歷史：曾用 [0, 12]（IS PF 1.42→1.61）但 audit_entry_hour_blacklist.py
+  # 顯示 hour 12 在 OOS 反而 +6.09 avg（樣本 2 筆），整體 OOS PF 改善僅
+  # 0.96→1.00（雜訊層級），判定為 IS-side overfit。
+  entry_hour_blacklist: []
 
 fees:
   taker_fee_rate: 0.0005    # 0.05%
