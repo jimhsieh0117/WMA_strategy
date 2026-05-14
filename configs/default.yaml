@@ -129,9 +129,12 @@ strategy:
     bollinger_num_std:          2.0
 
     # r_ladder mode 參數（normal R）
-    r_ladder_normal_first_trigger:   2.5   # 2.8R 第一檔啟動
-    r_ladder_normal_step:            0.5   # 檔距（2.8 → 3.8 → 4.8 …）
-    r_ladder_trigger_offset:         0.2   # trigger − stop（2.8 觸發 → 鎖 2.5）
+    # 2026-05-14: step 0.5→1.0、offset 0.2→0.5（per OOS sweep，見 scripts/sweep_r_ladder.py）
+    # 理由：原本檔距 0.5 / 回吐 0.2 太密，趨勢中段容易被洗掉。
+    # OOS PF 0.92→1.13、OOS ret -0.72%→+1.14%、Long s3 avg PnL +40%
+    r_ladder_normal_first_trigger:   2.5   # 2.5R 第一檔啟動（鎖 2.0R）
+    r_ladder_normal_step:            1.0   # 檔距（2.5 → 3.5 → 4.5 …）
+    r_ladder_trigger_offset:         0.5   # trigger − stop（3.5 觸發 → 鎖 3.0）
 
     # -------- Abnormal R fallback（防呆參數）--------
     # 何時生效：當 R/entry < 2 × taker_fee（即 stop 距離被手續費吃光）。
