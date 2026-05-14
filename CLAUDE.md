@@ -35,7 +35,10 @@
 
 ## 二、絕對禁止
 
-1. **修改兄弟專案**：不得修改 `~/Documents/GitHub/` 下任何其他專案（PPO_TradingModel、Alpha_team、Pine_Strategies 等）的檔案。**例外**：使用者在 prompt 中明確點名允許修改某個檔案。讀取參考則永遠允許。
+1. **動作邊界（檔案層級）**：
+   - **本專案 (`WMA_strategy/`)**：可自由新增、修改檔案，以及執行測試（`pytest`、跑回測等）。
+   - **其他兄弟專案** (`~/Documents/GitHub/` 下的 PPO_TradingModel、Alpha_team、Pine_Strategies 等)：**僅限讀取**。不得新增、修改、刪除任何檔案。**例外**：使用者在 prompt 中明確點名允許修改某個檔案。
+   - **刪除檔案 / 刪除類指令**（本專案與其他專案皆然）：一律**不執行**。需要刪除時，把指令貼給使用者，由使用者自行確認後執行。涵蓋：`rm`、`rm -rf`、`git rm`、`git clean -f`、`git branch -D`、`shutil.rmtree`、`Path.unlink` 等。
 2. **執行被 settings 阻擋的指令**：不繞過 `pip install` / `rm` / `git push` / `WebFetch` 等限制。需要時請使用者執行或先請求允許。
 3. **Look-ahead bias**：指標 / 策略 / broker 任何位置都不得使用未來 K 線資料。詳見 `ARCHITECTURE.md §3.1`。
    - WMA / ATR / ADX / Bollinger / rank 等所有指標的 `value[t]` 只能由 `bar[0..t]` 推導
