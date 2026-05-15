@@ -1,3 +1,6 @@
+# Python >= 3.12 建議（當前開發環境 3.14.3）
+# 安裝：python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+
 # Core
 pandas>=2.2
 numpy>=1.26
@@ -6,11 +9,12 @@ pyarrow>=15.0
 # Config
 pyyaml>=6.0
 
-# Exchange data
+# Exchange data — Binance USDT-M perpetual OHLCV（回測載入 + live paper trading）
 ccxt>=4.0
 
 # Visualization
 matplotlib>=3.8
+plotly>=5.20             # scripts/report_stage_market_structure.py 用
 
 # Progress bars (long-running loops)
 tqdm>=4.66
@@ -21,6 +25,7 @@ scikit-learn>=1.5
 # Testing
 pytest>=8.0
 
-# Interactive backtest viewer (FastAPI + TradingView Lightweight Charts)
+# Interactive viewer + live paper trading server
+# (FastAPI + TradingView Lightweight Charts；WebSocket 用 starlette 內建，不需 websockets 套件)
 fastapi>=0.115
 uvicorn>=0.27
