@@ -97,6 +97,10 @@ class TrailingStopParams:
     # stage2_enabled=False → Stage 2 完全跳過：stage 1 達 stage3_trigger 直接進 stage 3，
     # 不經過「保本 + buffer」階段；stage 3 也不再用 stage2_value 當 floor。
     stage2_enabled: bool = True
+    # stage2_use_pct_only=True → 只用 stage2_pct_trigger 觸發 stage 2 推進，
+    # 完全忽略 R-based trigger（stage2_normal_trigger_r / stage2_abnormal_trigger_r）。
+    # False（預設） → 既有 OR 行為：R-based 與 pct-based 任一達標都觸發。
+    stage2_use_pct_only: bool = False
     stage2_normal_trigger_r: float = 1.2
     stage2_abnormal_trigger_r: float = 2.4
     stage2_buffer_r: float = 0.2
@@ -232,6 +236,17 @@ class TrailingStopParams:
             raise ConfigError(
                 f"early_exit_metric must be one of {VALID_EARLY_EXIT_METRICS}, "
                 f"got {self.early_exit_metric!r}"
+            )
+
+        # stage2_use_pct_only 驗證
+        if not isinstance(self.stage2_use_pct_only, bool):
+            raise ConfigError(
+                f"stage2_use_pct_only must be bool, got {self.stage2_use_pct_only!r}"
+            )
+        if self.stage2_use_pct_only and self.stage2_pct_trigger <= 0:
+            raise ConfigError(
+                "stage2_use_pct_only=True 時 stage2_pct_trigger 必須 > 0，"
+                f"got {self.stage2_pct_trigger}"
             )
 
         # stage1_time_cut 驗證

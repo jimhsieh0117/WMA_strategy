@@ -96,8 +96,8 @@ fees:
 strategy:
   # 進場條件（一律使用原始 K 線）
   # WMA per-direction：long 維持 4/6（穩定）、short 用 2/4（更敏感抓快下跌）
-  wma_long_fast:  4
-  wma_long_slow:  6
+  wma_long_fast:  2
+  wma_long_slow:  4
   wma_short_fast: 2
   wma_short_slow: 4
 
@@ -108,15 +108,17 @@ strategy:
     stage1_slippage_buffer:   0.0003    # 0.03% 推離極值
 
     # Stage 2：保本鎖利
-    # stage2_enabled=false → 完全跳過 stage 2：stage 1 達 stage3_trigger 直接進 stage 3，
-    # 不經過保本+buffer 階段；stage 3 也不用 stage2_value 當 floor。
-    stage2_enabled:             false
-    stage2_normal_trigger_r:    1.2     # 1.2R 觸發保本
+    # stage2_enabled=false → 完全跳過 stage 2。
+    # stage2_use_pct_only=true → 只用 stage2_pct_trigger 觸發（忽略 R-based）；
+    #                            預設 false 為「R OR pct」既有行為。
+    # 實驗（2026-05-15）：stage2 on + pct-only 0.5%，配合 filter 全關，看會不會改善
+    stage2_enabled:             true
+    stage2_use_pct_only:        true
+    stage2_normal_trigger_r:    1.2     # R-based 觸發（use_pct_only=true 時無作用）
     stage2_buffer_r:            0.2     # 保本 stop 額外 +0.2R buffer
-    # %-based OR 觸發：peak_pct = (peak − entry) / entry 達此值也觸發 stage 2。
-    # 0 = 關閉（純 R-based 舊版）；>0 = OR 條件
-    # 實測：0.0030 救 750 s1→s2 但同時砍掉 445 s3→s2，net −100 USDT。維持 0。
-    stage2_pct_trigger:         0.0
+    # %-based 觸發：peak_pct = (peak − entry) / entry 達此值觸發 stage 2。
+    # 0 = 關閉；>0 = 啟用。0.005 = 0.5%（BTC 15m 中等突破）。
+    stage2_pct_trigger:         0.005
 
     # Stage 3：跟蹤模式
     stage3_normal_trigger_r:    2.0     # 進入 Stage 3 的 trigger
@@ -185,7 +187,7 @@ strategy:
   #   threshold: LONG 需 ratio ≥ threshold；SHORT 需 ratio ≤ (1 − threshold)
   #   window: 進場前回看根數（含訊號 K 自己，一律用原始 K）
   signal_filter:
-    mode: body_sum                # off | body_sum | body_sq_sum
+    mode: off                # off | body_sum | body_sq_sum
     window: 6
     threshold: 0.73               # IS sweep (0.65..0.85 step 0.01) sweetspot：
                                   # n=97, s3/s1=0.80, combined +207 USDT
@@ -198,7 +200,7 @@ strategy:
   # 暖機：~ rank_window 根 K 線（預設 200）→ 開頭 ~200 根訊號必拒絕
   # 研究依據：sweep_chop_filters_combo.py IS PF 0.768 → 0.96（n 1300+ → 874）
   chop_filter:
-    enabled: true
+    enabled: false
     # 波動門檻（sweep_retry_vol.py 2-yr IS sweep）：
     #   vol=5  (rank ≥ 5)  → PnL +243 / PF 1.35 / MDD 4.9% / Sharpe 1.11
     #   vol=45 (rank ≥ 45) → PnL +236 / PF 1.61 / MDD 3.2% / Sharpe 1.27 ★ risk-adjusted 最佳
@@ -223,7 +225,7 @@ strategy:
   # 研究依據：report_stage_market_structure.py 在 BTC 2 年 IS：
   #   stage 3 aligned 比例 long 60.8% / short 64.8% vs stage 1 ~48-50%（差 13-15pp）
   structure_filter:
-    enabled: true                 # 預設啟用；long/short 各自只接同向結構訊號
+    enabled: false                # 實驗（2026-05-15）：全 filter 關閉
     mode: aligned                 # aligned | exclude_counter
     pivot_left: 10                # 與 viewer market_structure 指標一致
     pivot_right: 10
@@ -241,7 +243,7 @@ strategy:
   #   short max=3: ret -84.35% / PF 0.69 / MDD 86.9%（爆倉等級，禁用！）
   # → 目前兩邊都先 1（保守）；之後若做更精細的 long 端 retry 實驗可只動 long_max_attempts。
   entry_retry:
-    long_max_attempts: 2
+    long_max_attempts: 1
     short_max_attempts: 1
 
   # R-cap：用近期 trades 的平均 R 抑制單筆過大 R 的影響（trigger-only 版本）

@@ -43,6 +43,7 @@ class TrailingConfig:
     stage1_slippage_buffer: float = 0.0003
 
     stage2_enabled: bool = True       # False = 跳過 stage 2，stage 1 直接接 stage 3
+    stage2_use_pct_only: bool = False # True = 只用 stage2_pct_trigger，忽略 R-based
     stage2_normal_trigger_r: float = 1.2
     stage2_abnormal_trigger_r: float = 2.4
     stage2_buffer_r: float = 0.2
@@ -319,6 +320,7 @@ def load_config(path: str | Path) -> FullConfig:
         swing_lookback=int(trailing_raw.get("swing_lookback", 4)),
         stage1_slippage_buffer=float(trailing_raw.get("stage1_slippage_buffer", 0.0003)),
         stage2_enabled=bool(trailing_raw.get("stage2_enabled", True)),
+        stage2_use_pct_only=bool(trailing_raw.get("stage2_use_pct_only", False)),
         stage2_normal_trigger_r=float(trailing_raw.get("stage2_normal_trigger_r", 1.2)),
         stage2_abnormal_trigger_r=float(trailing_raw.get("stage2_abnormal_trigger_r", 2.4)),
         stage2_buffer_r=float(trailing_raw.get("stage2_buffer_r", 0.2)),

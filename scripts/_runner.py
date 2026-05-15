@@ -61,39 +61,19 @@ def _resolve_period(cfg: FullConfig, sample: Literal["is", "oos"]) -> PeriodSpec
 
 
 # --------------------------------------------------------------------------- #
-# 1) 單支策略回測
+# 共用 helper：從 FullConfig 建構 StrategyParams / EngineConfig
+# （回測 + live paper trading 共用）
 # --------------------------------------------------------------------------- #
 
-def run_single_strategy(
-    cfg: FullConfig,
-    direction: Literal["long", "short"],
-    sample: Literal["is", "oos"] = "is",
-) -> BacktestResult:
-    """執行單一方向策略回測，回傳 ``BacktestResult``（不印、不存檔）。"""
-    period = _resolve_period(cfg, sample)
-    label = f"{direction}_{cfg.timeframe}_{sample}"
-
-    logger.info("=" * 60)
-    logger.info("[%s] WMA Backtest: %s %s", label, cfg.symbol, cfg.timeframe)
-    logger.info("Period: %s ~ %s", period.start, period.end)
-    logger.info("=" * 60)
-
-    logger.info("[1/4] loading 1m data ...")
-    df1m = load_ohlcv(cfg.source_parquet, start=period.start, end=period.end)
-    logger.info("    loaded %s 1m bars", f"{len(df1m):,}")
-
-    if cfg.timeframe != "1m":
-        logger.info("[2/4] resampling 1m -> %s ...", cfg.timeframe)
-        df = resample(df1m, cfg.timeframe)
-    else:
-        df = df1m
-    logger.info("    %s %s bars after resample", f"{len(df):,}", cfg.timeframe)
-
-    logger.info("[3/4] preparing indicators ...")
+def build_strategy_params(
+    cfg: FullConfig, direction: Literal["long", "short"],
+) -> StrategyParams:
+    """從 FullConfig 建構指定 direction 的 StrategyParams（包含 WMA per-direction）。"""
     trailing = TrailingStopParams(
         swing_lookback=cfg.trailing.swing_lookback,
         stage1_slippage_buffer=cfg.trailing.stage1_slippage_buffer,
         stage2_enabled=cfg.trailing.stage2_enabled,
+        stage2_use_pct_only=cfg.trailing.stage2_use_pct_only,
         stage2_normal_trigger_r=cfg.trailing.stage2_normal_trigger_r,
         stage2_abnormal_trigger_r=cfg.trailing.stage2_abnormal_trigger_r,
         stage2_buffer_r=cfg.trailing.stage2_buffer_r,
@@ -149,12 +129,11 @@ def run_single_strategy(
         long_max_attempts=cfg.entry_retry.long_max_attempts,
         short_max_attempts=cfg.entry_retry.short_max_attempts,
     )
-    # WMA per-direction：long / short 各自一組
     if direction == "long":
         wma_fast_val, wma_slow_val = cfg.wma_long_fast, cfg.wma_long_slow
     else:
         wma_fast_val, wma_slow_val = cfg.wma_short_fast, cfg.wma_short_slow
-    params = StrategyParams(
+    return StrategyParams(
         wma_fast=wma_fast_val,
         wma_slow=wma_slow_val,
         trailing=trailing,
@@ -164,16 +143,11 @@ def run_single_strategy(
         structure_filter=structure_filter,
         entry_retry=entry_retry,
     )
-    augmented = prepare_indicators(df, params)
 
-    broker = BrokerSimulator(BrokerConfig(
-        taker_fee_rate=cfg.taker_fee_rate,
-        maker_fee_rate=cfg.maker_fee_rate,
-        slippage_pct=cfg.slippage_pct,
-    ))
-    account = Account(cfg.initial_capital, name=label)
-    strategy = _build_strategy(direction, params)
-    engine_cfg = EngineConfig(
+
+def build_engine_config(cfg: FullConfig) -> EngineConfig:
+    """從 FullConfig 建構 EngineConfig。"""
+    return EngineConfig(
         sizing_mode=cfg.sizing_mode,  # type: ignore[arg-type]
         position_size_pct=cfg.position_size_pct,
         risk_per_trade_usdt=cfg.risk_per_trade_usdt,
@@ -184,6 +158,52 @@ def run_single_strategy(
         entry_hour_blacklist=cfg.entry_hour_blacklist,
         force_close_at_end=cfg.force_close_at_end,
     )
+
+
+def build_broker(cfg: FullConfig) -> BrokerSimulator:
+    return BrokerSimulator(BrokerConfig(
+        taker_fee_rate=cfg.taker_fee_rate,
+        maker_fee_rate=cfg.maker_fee_rate,
+        slippage_pct=cfg.slippage_pct,
+    ))
+
+
+# --------------------------------------------------------------------------- #
+# 1) 單支策略回測
+# --------------------------------------------------------------------------- #
+
+def run_single_strategy(
+    cfg: FullConfig,
+    direction: Literal["long", "short"],
+    sample: Literal["is", "oos"] = "is",
+) -> BacktestResult:
+    """執行單一方向策略回測，回傳 ``BacktestResult``（不印、不存檔）。"""
+    period = _resolve_period(cfg, sample)
+    label = f"{direction}_{cfg.timeframe}_{sample}"
+
+    logger.info("=" * 60)
+    logger.info("[%s] WMA Backtest: %s %s", label, cfg.symbol, cfg.timeframe)
+    logger.info("Period: %s ~ %s", period.start, period.end)
+    logger.info("=" * 60)
+
+    logger.info("[1/4] loading 1m data ...")
+    df1m = load_ohlcv(cfg.source_parquet, start=period.start, end=period.end)
+    logger.info("    loaded %s 1m bars", f"{len(df1m):,}")
+
+    if cfg.timeframe != "1m":
+        logger.info("[2/4] resampling 1m -> %s ...", cfg.timeframe)
+        df = resample(df1m, cfg.timeframe)
+    else:
+        df = df1m
+    logger.info("    %s %s bars after resample", f"{len(df):,}", cfg.timeframe)
+
+    logger.info("[3/4] preparing indicators ...")
+    params = build_strategy_params(cfg, direction)
+    augmented = prepare_indicators(df, params)
+    broker = build_broker(cfg)
+    account = Account(cfg.initial_capital, name=label)
+    strategy = _build_strategy(direction, params)
+    engine_cfg = build_engine_config(cfg)
 
     logger.info("[4/4] running backtest ...")
     return run_backtest(

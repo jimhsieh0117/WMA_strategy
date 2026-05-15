@@ -1,0 +1,127 @@
+# WMA Strategy — Live Paper Trading 設定
+#
+# 用於 scripts/live_sim.py（Binance USDT-M perpetual 即時 K 線 paper trade）。
+# 跟 default.yaml 同 schema 但只取「實驗版 baseline」(commit 8906a7d) 的安全設定，
+# 避免拿當前 default.yaml 的災難實驗配置跑 paper trade。
+#
+# 跟 default.yaml 的差異：
+#   - period.* 為 dummy（live mode 不使用 IS/OOS 期間）
+#   - source_dir 為 dummy（live 從 Binance 抓，不讀 parquet）
+#   - filter 全開、stage2 off、retry long=2/short=1、WMA long 4/6 / short 2/4
+#
+# 修改：要實驗別的參數先複製這檔再改，不要動本檔（live baseline）
+
+data:
+  # live 模式不讀 parquet；保留 source_dir 是因為 config schema 要求
+  source_dir: /Users/jim_hsieh/Documents/GitHub/PPO_TradingModel/data/processed
+  symbol: BTCUSDT
+  timeframe: 15m
+
+period:
+  # live 不用，保留 dummy 過去日期讓 validation 通過
+  in_sample:
+    start: 2023-01-01
+    end:   2024-12-31
+  out_of_sample:
+    start: 2025-01-01
+    end:   null
+
+account:
+  initial_capital: 1000.0
+  sizing_mode: risk
+  position_size_pct: 0.60
+  risk_per_trade_usdt: 10.0
+  risk_per_trade_pct: 0.0
+  allow_pyramiding: true
+  leverage_cap: 8.0
+  r_min_pct: 0.0022
+  entry_hour_blacklist: []
+
+fees:
+  taker_fee_rate: 0.0005
+  maker_fee_rate: 0.0002
+  slippage_pct:   0.0003
+
+strategy:
+  # WMA per-direction：long 穩、short 敏感
+  wma_long_fast:  4
+  wma_long_slow:  6
+  wma_short_fast: 2
+  wma_short_slow: 4
+
+  trailing:
+    swing_lookback:           4
+    stage1_slippage_buffer:   0.0003
+
+    # Stage 2：關閉（之前驗證是「贏家殺手」，avg_win 18.23 vs stage2-on 9.49）
+    stage2_enabled:             false
+    stage2_use_pct_only:        false
+    stage2_normal_trigger_r:    1.2
+    stage2_buffer_r:            0.2
+    stage2_pct_trigger:         0.0
+
+    stage3_normal_trigger_r:    2.0
+
+    # r_ladder：step=1.0/offset=0.5（commit c474c71 sweep 結果）
+    stage3_mode: r_ladder
+    bollinger_period:           20
+    bollinger_num_std:          2.0
+    r_ladder_normal_first_trigger:   2.5
+    r_ladder_normal_step:            1.0
+    r_ladder_trigger_offset:         0.5
+
+    stage2_abnormal_trigger_r:        2.4
+    stage3_abnormal_trigger_r:        4.0
+    r_ladder_abnormal_first_trigger:  5.6
+    r_ladder_abnormal_step:           2.0
+    r_ladder_abnormal_trigger_offset: 0.6
+
+    early_exit_enabled:           false
+    early_exit_observation_bars:  1
+    early_exit_metric:            peak
+    early_exit_min_peak_r:        0.0
+    early_exit_min_peak_pct:      0.0
+    early_exit_min_close_r:       -0.5
+
+    # Stage 1 time-cut on：擋死撐
+    stage1_time_cut_enabled:        true
+    stage1_time_cut_bars:           8
+    stage1_time_cut_peak_r_max:     0.5
+
+  # 進場濾網全開（baseline）
+  signal_filter:
+    mode: body_sum
+    window: 6
+    threshold: 0.73
+
+  chop_filter:
+    enabled: true
+    bbw_rank_min: 45.0
+    atr_rank_min: 45.0
+    adx_min: 20.0
+    bb_period: 20
+    bb_num_std: 2.0
+    atr_period: 14
+    adx_period: 14
+    rank_window: 200
+
+  structure_filter:
+    enabled: true
+    mode: aligned
+    pivot_left: 10
+    pivot_right: 10
+
+  # Asymmetric retry：long 給 2 根機會、short 嚴 1 根
+  entry_retry:
+    long_max_attempts: 2
+    short_max_attempts: 1
+
+  r_cap:
+    mode: "off"
+    window: 100
+
+backtest:
+  output_dir: results
+  show_progress: false        # live 模式不需要 tqdm
+  force_close_at_end: false
+  log_level: INFO

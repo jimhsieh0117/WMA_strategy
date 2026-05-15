@@ -190,14 +190,19 @@ class TrailingStopController:
         if progress_pct > self.peak_pct:
             self.peak_pct = progress_pct
 
-        # 2. 階段推進（單向）。Stage 1→2 額外支援 %-based OR 觸發。
-        # stage2_enabled=False → 跳過 stage 2，stage 1 達 stage3_trigger 直接進 stage 3。
+        # 2. 階段推進（單向）。Stage 1→2 支援三種模式：
+        #    - stage2_enabled=False：完全跳過 stage 2
+        #    - stage2_use_pct_only=True：只用 % trigger（忽略 R-based）
+        #    - 否則（預設）：R-based OR pct-based
         if self.params.stage2_enabled:
             pct_trigger = self.params.stage2_pct_trigger
-            stage2_fired = (
-                progress_r >= self.stage2_trigger
-                or (pct_trigger > 0 and progress_pct >= pct_trigger)
-            )
+            if self.params.stage2_use_pct_only:
+                stage2_fired = progress_pct >= pct_trigger
+            else:
+                stage2_fired = (
+                    progress_r >= self.stage2_trigger
+                    or (pct_trigger > 0 and progress_pct >= pct_trigger)
+                )
             if self.stage == 1 and stage2_fired:
                 self._transition(2, bar.timestamp, progress_r)
             if self.stage == 2 and progress_r >= self.stage3_trigger:
